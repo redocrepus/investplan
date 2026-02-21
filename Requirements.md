@@ -77,6 +77,8 @@ When expanded, in addition show:
 ## Additional requirements
 
 - Allow running N simulations (with randomization of the parameters according to the expected min/max/average/volatility) and tell the percentage of simulations that succeeded in covering the expenses for the entire investment period.
+- Allow saving and loading the full configuration (all input parameters) to/from a file, so that sessions can be resumed and shared.
+- When exiting with unsaved changes, prompt the user to save before closing.
 - Must be easily extendable to add more parameters and more complex strategies in the future.
 - Must be easily runnable on windows.
 - Cross-platform - advantage.

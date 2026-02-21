@@ -147,6 +147,7 @@ investplan/
 
 ### Stage 6 — Persistence & UX Polish
 - [ ] Save / load `SimConfig` to JSON file
+- [ ] Track unsaved changes; on exit, prompt "Save before closing?" (Save / Discard / Cancel) if there are unsaved changes
 - [ ] Auto-save last config on exit, restore on launch
 - [ ] Input validation with inline error messages
 - [ ] Tooltips on all input fields explaining the parameter
