@@ -105,54 +105,54 @@ investplan/
 - [x] Write unit tests for each engine module (deterministic seed)
 - [x] Integration test: full 2-year run, assert total net-spent ≈ total expenses
 
-### Stage 3 — Main Window Shell
-- [ ] `gui/main_window.py` — QMainWindow with splitter (left panel / right table)
-- [ ] Toolbar: **Run Simulation**, **Run Monte Carlo**, **Save Config**, **Load Config**
-- [ ] Status bar showing last-run success/failure summary
+### Stage 3 — Main Window Shell ✅
+- [x] `gui/main_window.py` — QMainWindow with splitter (left panel / right table)
+- [x] Toolbar: **Run Simulation**, **Run Monte Carlo**, **Save Config**, **Load Config**
+- [x] Status bar showing last-run success/failure summary
 
-### Stage 4 — Table View
-- [ ] `gui/table/model.py` — QAbstractTableModel backed by simulator DataFrame
-  - [ ] Support toggling between monthly and yearly row view
-- [ ] `gui/table/header.py` — two-level QHeaderView (Bucket name row + column name row)
-- [ ] Collapsible bucket column groups (collapse to 4 summary columns)
-- [ ] Collapsible individual columns within a bucket
-- [ ] `gui/table/delegates.py`
-  - [ ] Red cell when Total Net-Spent < Expenses
-  - [ ] Currency-formatted numbers
-  - [ ] Percent-formatted cells
+### Stage 4 — Table View ✅
+- [x] `gui/table/model.py` — QAbstractTableModel backed by simulator DataFrame
+  - [x] Support toggling between monthly and yearly row view
+- [x] `gui/table/header.py` — two-level QHeaderView (Bucket name row + column name row)
+- [x] Collapsible bucket column groups (collapse to 4 summary columns)
+- [x] Collapsible individual columns within a bucket
+- [x] `gui/table/delegates.py`
+  - [x] Red cell when Total Net-Spent < Expenses
+  - [x] Currency-formatted numbers
+  - [x] Percent-formatted cells
 
-### Stage 5 — Input Panels & Dialogs
-- [ ] `gui/panels/global_panel.py`
-  - [ ] Investment period (years spinner)
-  - [ ] Expenses currency (combobox, locale default)
-  - [ ] Total hedge amount
-  - [ ] Capital gain tax %
-  - [ ] Inflation settings (min/max/avg/volatility)
-- [ ] `gui/panels/expense_panel.py`
-  - [ ] List of expense periods (start month/year, min/max/avg amount, volatility)
-  - [ ] Add / edit / remove buttons → `expense_dialog.py`
-  - [ ] One-time expense list with add/edit/remove
-- [ ] `gui/panels/currency_panel.py`
-  - [ ] One section per non-expenses currency found in buckets
-  - [ ] Initial price, min/max/avg, volatility, conversion fee
-- [ ] `gui/panels/bucket_panel.py`
-  - [ ] List of investment buckets with add/edit/remove/reorder
-  - [ ] Opens `bucket_dialog.py` for full editing
-- [ ] `gui/dialogs/bucket_dialog.py`
-  - [ ] All bucket fields (name, currency, initial price/amount, growth min/max/avg, volatility, fees, target growth)
-  - [ ] Rebalancing section (monthly/yearly, sell trigger, standby bucket, buy trigger, buying priority, required runaway, spending priority, cash floor)
-- [ ] `gui/dialogs/montecarlo_dialog.py`
-  - [ ] N simulations spinner
-  - [ ] Progress bar
-  - [ ] Results: success %, percentile curves (10th / 50th / 90th portfolio value)
+### Stage 5 — Input Panels & Dialogs ✅
+- [x] `gui/panels/global_panel.py`
+  - [x] Investment period (years spinner)
+  - [x] Expenses currency (combobox, locale default)
+  - [x] Total hedge amount
+  - [x] Capital gain tax %
+  - [x] Inflation settings (min/max/avg/volatility)
+- [x] `gui/panels/expense_panel.py`
+  - [x] List of expense periods (start month/year, min/max/avg amount, volatility)
+  - [x] Add / edit / remove buttons → `expense_dialog.py`
+  - [x] One-time expense list with add/edit/remove
+- [x] `gui/panels/currency_panel.py`
+  - [x] One section per non-expenses currency found in buckets
+  - [x] Initial price, min/max/avg, volatility, conversion fee
+- [x] `gui/panels/bucket_panel.py`
+  - [x] List of investment buckets with add/edit/remove/reorder
+  - [x] Opens `bucket_dialog.py` for full editing
+- [x] `gui/dialogs/bucket_dialog.py`
+  - [x] All bucket fields (name, currency, initial price/amount, growth min/max/avg, volatility, fees, target growth)
+  - [x] Rebalancing section (monthly/yearly, sell trigger, standby bucket, buy trigger, buying priority, required runaway, spending priority, cash floor)
+- [x] `gui/dialogs/montecarlo_dialog.py`
+  - [x] N simulations spinner
+  - [x] Progress bar
+  - [x] Results: success %, percentile curves (10th / 50th / 90th portfolio value)
 
-### Stage 6 — Persistence & UX Polish
-- [ ] Save / load `SimConfig` to JSON file
-- [ ] Track unsaved changes; on exit, prompt "Save before closing?" (Save / Discard / Cancel) if there are unsaved changes
+### Stage 6 — Persistence & UX Polish ✅
+- [x] Save / load `SimConfig` to JSON file
+- [x] Track unsaved changes; on exit, prompt "Save before closing?" (Save / Discard / Cancel) if there are unsaved changes
 - [ ] Auto-save last config on exit, restore on launch
 - [ ] Input validation with inline error messages
-- [ ] Tooltips on all input fields explaining the parameter
-- [ ] Export simulation table to CSV / Excel (via pandas)
+- [x] Tooltips on all input fields explaining the parameter
+- [x] Export simulation table to CSV / Excel (via pandas)
 
 ### Stage 7 — Packaging & Docs
 - [ ] `requirements.txt` with pinned versions

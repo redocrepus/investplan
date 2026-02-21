@@ -1,12 +1,15 @@
 """Investment Planner — entry point."""
 
 import sys
+from PyQt6.QtWidgets import QApplication
+from gui.main_window import MainWindow
 
 
 def main():
-    # GUI will be implemented in Stage 3+
-    print("Investment Planner — GUI not yet implemented. Run pytest to verify engine.")
-    sys.exit(0)
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
