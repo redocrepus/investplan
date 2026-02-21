@@ -22,8 +22,10 @@ Application for investment strategy planning and Monte Carlo simulation.
 
 ```bash
 python -m venv .venv
+
 # Windows
 .venv\Scripts\activate
+
 # macOS/Linux
 source .venv/bin/activate
 
@@ -33,6 +35,11 @@ pip install -r requirements.txt
 ## Dev Run
 
 ```bash
+# Windows
+.venv\Scripts\activate
+# macOS/Linux
+source .venv/bin/activate
+
 python main.py
 ```
 
@@ -46,13 +53,21 @@ The last session's configuration is automatically restored on launch.
 ## Test
 
 ```bash
-pytest tests/ -v
+# Windows
+.venv\Scripts\activate
+# macOS/Linux
+source .venv/bin/activate
+
+python -m pytest tests/ -v
 ```
 
 ## Build (Windows .exe)
 
 ```bash
-pyinstaller investplan.spec
+# Windows
+.venv\Scripts\activate
+
+python -m PyInstaller investplan.spec
 ```
 
 The executable `InvestmentPlanner.exe` will be in the `dist/` folder.
@@ -60,5 +75,5 @@ The executable `InvestmentPlanner.exe` will be in the `dist/` folder.
 Alternatively, for a quick single-file build:
 
 ```bash
-pyinstaller --onefile --noconsole main.py
+python -m PyInstaller --onefile --noconsole main.py
 ```
