@@ -72,37 +72,38 @@ investplan/
   - **Build** — producing the standalone Windows `.exe` via PyInstaller
   - **Run** — launching the built executable
   - Any environment prerequisites (Python version, OS, etc.)
+- **Checklists in this plan must be maintained during implementation.** When a task is completed, update its checkbox from `[ ]` to `[x]`. This keeps the plan a living document that reflects actual progress.
 
 ---
 
 ## Implementation Stages
 
-### Stage 1 — Project Skeleton & Data Models
-- [ ] Create directory structure and `requirements.txt`
-- [ ] Implement `models/config.py` — top-level `SimConfig` (period, currency, tax, hedge)
-- [ ] Implement `models/inflation.py` — `InflationSettings` (min/max/avg/volatility)
-- [ ] Implement `models/expense.py` — `ExpensePeriod`, `OneTimeExpense`
-- [ ] Implement `models/currency.py` — `CurrencySettings` (FX min/max/avg/volatility/fee)
-- [ ] Implement `models/bucket.py` — `InvestmentBucket` + `RebalancingParams`
-- [ ] Implement `utils/currency_list.py` (ISO list + locale default)
-- [ ] Implement `utils/volatility.py` (named profiles → (σ_monthly, distribution) mappings)
-- [ ] Write unit tests for model validation
+### Stage 1 — Project Skeleton & Data Models ✅
+- [x] Create directory structure and `requirements.txt`
+- [x] Implement `models/config.py` — top-level `SimConfig` (period, currency, tax, hedge)
+- [x] Implement `models/inflation.py` — `InflationSettings` (min/max/avg/volatility)
+- [x] Implement `models/expense.py` — `ExpensePeriod`, `OneTimeExpense`
+- [x] Implement `models/currency.py` — `CurrencySettings` (FX min/max/avg/volatility/fee)
+- [x] Implement `models/bucket.py` — `InvestmentBucket` + `RebalancingParams`
+- [x] Implement `utils/currency_list.py` (ISO list + locale default)
+- [x] Implement `utils/volatility.py` (named profiles → (σ_monthly, distribution) mappings)
+- [x] Write unit tests for model validation
 
-### Stage 2 — Financial Engine (no GUI)
-- [ ] `engine/inflation.py` — monthly inflation random walk (const / mild / crazy)
-- [ ] `engine/currency.py` — monthly FX rate random walk per non-expenses currency
-- [ ] `engine/bucket.py` — monthly price growth, dividends/interest accrual
-- [ ] `engine/expenses.py` — monthly expense draw, volatility, one-time events
-- [ ] `engine/rebalancer.py`
-  - [ ] Target-trajectory sell trigger logic (`actual_growth% / target_growth% > X`)
-  - [ ] Standby bucket buy-trigger logic (`100*target_price/current_price - 100 > X`)
-  - [ ] Runaway guard (don't sell if cash runway < required months)
-  - [ ] Cash-floor guard (don't sell bucket below cash floor; cascade to next in spending priority)
-  - [ ] Fee and capital-gains-tax deduction on sell
-- [ ] `engine/simulator.py` — orchestrate one full simulation, return `pd.DataFrame`
-- [ ] `engine/montecarlo.py` — run N simulations, return success rate + percentile frames
-- [ ] Write unit tests for each engine module (deterministic seed)
-- [ ] Integration test: full 10-year run, assert total net-spent == total expenses
+### Stage 2 — Financial Engine (no GUI) ✅
+- [x] `engine/inflation.py` — monthly inflation random walk (const / mild / crazy)
+- [x] `engine/currency.py` — monthly FX rate random walk per non-expenses currency
+- [x] `engine/bucket.py` — monthly price growth, dividends/interest accrual
+- [x] `engine/expenses.py` — monthly expense draw, volatility, one-time events
+- [x] `engine/rebalancer.py`
+  - [x] Target-trajectory sell trigger logic (`actual_growth% / target_growth% > X`)
+  - [x] Standby bucket buy-trigger logic (`100*target_price/current_price - 100 > X`)
+  - [x] Runaway guard (don't sell if cash runway < required months)
+  - [x] Cash-floor guard (don't sell bucket below cash floor; cascade to next in spending priority)
+  - [x] Fee and capital-gains-tax deduction on sell
+- [x] `engine/simulator.py` — orchestrate one full simulation, return `pd.DataFrame`
+- [x] `engine/montecarlo.py` — run N simulations, return success rate + percentile frames
+- [x] Write unit tests for each engine module (deterministic seed)
+- [x] Integration test: full 2-year run, assert total net-spent ≈ total expenses
 
 ### Stage 3 — Main Window Shell
 - [ ] `gui/main_window.py` — QMainWindow with splitter (left panel / right table)

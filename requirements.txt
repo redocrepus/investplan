@@ -1,0 +1,6 @@
+pydantic>=2.0
+numpy
+pandas
+PyQt6
+pyinstaller
+pytest
