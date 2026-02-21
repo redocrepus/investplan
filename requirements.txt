@@ -1,6 +1,6 @@
-pydantic>=2.0
-numpy
-pandas
-PyQt6
-pyinstaller
-pytest
+pydantic==2.12.5
+numpy==2.4.2
+pandas==3.0.1
+PyQt6==6.10.2
+pyinstaller==6.19.0
+pytest==9.0.2

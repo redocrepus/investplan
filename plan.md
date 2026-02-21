@@ -149,15 +149,15 @@ investplan/
 ### Stage 6 — Persistence & UX Polish ✅
 - [x] Save / load `SimConfig` to JSON file
 - [x] Track unsaved changes; on exit, prompt "Save before closing?" (Save / Discard / Cancel) if there are unsaved changes
-- [ ] Auto-save last config on exit, restore on launch
-- [ ] Input validation with inline error messages
+- [x] Auto-save last config on exit, restore on launch
+- [x] Input validation with inline error messages
 - [x] Tooltips on all input fields explaining the parameter
 - [x] Export simulation table to CSV / Excel (via pandas)
 
-### Stage 7 — Packaging & Docs
-- [ ] `requirements.txt` with pinned versions
-- [ ] PyInstaller spec → single `.exe` for Windows
-- [ ] Final review of `README.md` for completeness and accuracy
+### Stage 7 — Packaging & Docs ✅
+- [x] `requirements.txt` with pinned versions
+- [x] PyInstaller spec → single `.exe` for Windows
+- [x] Final review of `README.md` for completeness and accuracy
 
 ---
 

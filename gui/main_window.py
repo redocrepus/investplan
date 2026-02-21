@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QAction
 import numpy as np
 import json
+import os
 
 from models.config import SimConfig
 from engine.simulator import run_simulation
@@ -36,6 +37,11 @@ class SimulationThread(QThread):
         self.finished.emit(df)
 
 
+_AUTOSAVE_PATH = os.path.join(
+    os.path.expanduser("~"), ".investplan_autosave.json"
+)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -50,6 +56,7 @@ class MainWindow(QMainWindow):
         self._setup_toolbar()
         self._setup_ui()
         self._setup_statusbar()
+        self._restore_autosave()
 
     # --- UI Setup ---
 
@@ -154,10 +161,57 @@ class MainWindow(QMainWindow):
     def _mark_dirty(self):
         self._dirty = True
 
+    # --- Auto-save / Restore ---
+
+    def _autosave(self):
+        try:
+            config = self._collect_config()
+            with open(_AUTOSAVE_PATH, "w") as f:
+                f.write(config.model_dump_json(indent=2))
+        except Exception:
+            pass  # best-effort
+
+    def _restore_autosave(self):
+        if not os.path.exists(_AUTOSAVE_PATH):
+            return
+        try:
+            with open(_AUTOSAVE_PATH, "r") as f:
+                data = json.load(f)
+            self._config = SimConfig.model_validate(data)
+            self._distribute_config()
+            self._statusbar.showMessage("Restored last session")
+        except Exception:
+            pass  # ignore corrupt autosave
+
+    # --- Validation ---
+
+    def _validate_config(self, config: SimConfig) -> str | None:
+        """Return an error message if config is invalid, or None if OK."""
+        if config.period_years < 1:
+            return "Period must be at least 1 year."
+        if not config.buckets:
+            return "Add at least one investment bucket."
+        for b in config.buckets:
+            if not b.name.strip():
+                return "All buckets must have a name."
+            if b.growth_min_pct > b.growth_max_pct:
+                return f"Bucket '{b.name}': growth min must be <= max."
+        if config.inflation.min_pct > config.inflation.max_pct:
+            return "Inflation min must be <= max."
+        for ep in config.expense_periods:
+            if ep.amount_min > ep.amount_max:
+                return "Expense period: amount min must be <= max."
+        return None
+
     # --- Actions ---
 
     def _on_run_simulation(self):
         config = self._collect_config()
+        error = self._validate_config(config)
+        if error:
+            self._statusbar.showMessage(f"Validation error: {error}")
+            QMessageBox.warning(self, "Validation Error", error)
+            return
         self._act_run.setEnabled(False)
         self._statusbar.showMessage("Running simulation...")
         self._sim_thread = SimulationThread(config)
@@ -174,6 +228,11 @@ class MainWindow(QMainWindow):
 
     def _on_run_monte_carlo(self):
         config = self._collect_config()
+        error = self._validate_config(config)
+        if error:
+            self._statusbar.showMessage(f"Validation error: {error}")
+            QMessageBox.warning(self, "Validation Error", error)
+            return
         dialog = MonteCarloDialog(config, self)
         dialog.exec()
 
@@ -216,6 +275,7 @@ class MainWindow(QMainWindow):
     # --- Close ---
 
     def closeEvent(self, event):
+        self._autosave()
         if self._dirty:
             reply = QMessageBox.question(
                 self, "Unsaved Changes",

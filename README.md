@@ -10,7 +10,9 @@ Application for investment strategy planning and Monte Carlo simulation.
 - Target-trajectory rebalancing with sell/buy triggers, runaway guard, and cash-floor cascade
 - Monte Carlo simulation with success rate and percentile statistics
 - Save/load configuration to JSON
+- Auto-save/restore last session on exit/launch
 - Export simulation results to CSV
+- Input validation with error messages before simulation
 
 ## Prerequisites
 
@@ -39,6 +41,8 @@ This launches the GUI with:
 - **Right panel** — Simulation results table with collapsible bucket column groups
 - **Toolbar** — Run Simulation, Run Monte Carlo, Save/Load Config, Export CSV
 
+The last session's configuration is automatically restored on launch.
+
 ## Test
 
 ```bash
@@ -48,7 +52,13 @@ pytest tests/ -v
 ## Build (Windows .exe)
 
 ```bash
-pyinstaller --onefile main.py
+pyinstaller investplan.spec
 ```
 
-The executable will be in the `dist/` folder.
+The executable `InvestmentPlanner.exe` will be in the `dist/` folder.
+
+Alternatively, for a quick single-file build:
+
+```bash
+pyinstaller --onefile --noconsole main.py
+```
