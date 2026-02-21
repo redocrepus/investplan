@@ -63,6 +63,18 @@ investplan/
 
 ---
 
+## Global Requirements
+
+- **`README.md` must be kept up-to-date at all times throughout development.** It must always contain clear, accurate instructions for:
+  - **Install** — setting up a Python virtual environment and installing dependencies
+  - **Dev run** — running the app directly from source (`python main.py`)
+  - **Test** — running the test suite (`pytest`)
+  - **Build** — producing the standalone Windows `.exe` via PyInstaller
+  - **Run** — launching the built executable
+  - Any environment prerequisites (Python version, OS, etc.)
+
+---
+
 ## Implementation Stages
 
 ### Stage 1 — Project Skeleton & Data Models
@@ -143,7 +155,7 @@ investplan/
 ### Stage 7 — Packaging & Docs
 - [ ] `requirements.txt` with pinned versions
 - [ ] PyInstaller spec → single `.exe` for Windows
-- [ ] Short `README.md` (install, run, build)
+- [ ] Final review of `README.md` for completeness and accuracy
 
 ---
 
