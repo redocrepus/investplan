@@ -61,21 +61,35 @@ class TwoLevelHeaderView(QHeaderView):
         s.setHeight(s.height() + self.BAND_HEIGHT)
         return s
 
+    def _is_bucket_column(self, logicalIndex: int) -> bool:
+        """Return True if this column belongs to a bucket group."""
+        for _, start, end in self._bucket_spans:
+            if start <= logicalIndex <= end:
+                return True
+        return False
+
     def paintSection(self, painter: QPainter, rect: QRect, logicalIndex: int):
-        """Paint column header shifted down to leave room for bucket band."""
+        """Paint column header; bucket columns are shifted down for the band."""
         if not painter:
             return
-        painter.save()
-        shifted = QRect(rect.x(), rect.y() + self.BAND_HEIGHT,
-                        rect.width(), rect.height() - self.BAND_HEIGHT)
-        super().paintSection(painter, shifted, logicalIndex)
-        painter.restore()
+
+        is_bucket = self._is_bucket_column(logicalIndex)
+
+        if is_bucket:
+            # Shift bucket column labels down to make room for the band
+            painter.save()
+            shifted = QRect(rect.x(), rect.y() + self.BAND_HEIGHT,
+                            rect.width(), rect.height() - self.BAND_HEIGHT)
+            super().paintSection(painter, shifted, logicalIndex)
+            painter.restore()
+        else:
+            # Fixed columns use the full height — no band above
+            super().paintSection(painter, rect, logicalIndex)
 
         # Draw bucket group band for columns that belong to a bucket
         for name, start, end in self._bucket_spans:
             if start <= logicalIndex <= end:
                 if logicalIndex == start:
-                    # Draw the merged bucket header across all its columns
                     x = self.sectionViewportPosition(start)
                     w = sum(self.sectionSize(i) for i in range(start, end + 1))
                     band_rect = QRect(x, rect.y(), w, self.BAND_HEIGHT)

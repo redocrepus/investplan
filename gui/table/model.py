@@ -64,7 +64,7 @@ class SimTableModel(QAbstractTableModel):
                 cols = BUCKET_EXPANDED_COLS
             for col in cols:
                 self._columns.append(f"{name}_{col}")
-                self._display_names.append(f"{name}: {col}")
+                self._display_names.append(col)
 
     def _get_view_df(self) -> pd.DataFrame:
         if self._df is None:
