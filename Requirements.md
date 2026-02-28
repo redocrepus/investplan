@@ -28,16 +28,23 @@ GUI: Excel like table where rows are months and columns are customizable financi
   - Expected yearly average growth (in percent)
   - Volatility profile [const(average), gov-bonds, s&p500, gold, bitcoin]
   - Buy/Sell fee (in percent)
+  - Capital gains cost basis method: FIFO (default), LIFO, or AVCO
   - Target growth (in percent)
-  - Target-trajectory rebalancing parameters inputs:
-    - monthly/yearly
-    - Sell trigger X: sell if `actual_growth%/target_growth% > X`
-    - Stand-by bucket class (choose other buckets what to buy with the sold amount)
-    - Buy-trigger X: buy if `100*target_price/current_price - 100 > X percent`
-    - Buying priority (allow visually ordering the buckets)
-    - Required Runaway (in months of expenses) before selling (to avoid selling in a market crash when the price is low and not having enough cash to cover expenses until the market recovers)
-    - Spending priority (allow visually ordering the buckets in order of selling first to cover expenses)
-    - Cash floor (in months of expenses caclulated after converted to expenses currency): When selling, keep at least this amount of cash in the bucket class (this + stand-by) to avoid selling a more profitable bucket just to cover expenses when the price is low and not having enough cash to cover expenses until the market recovers. If selling is needed to cover expenses and the bucket has hit the cash floor, sell from the next bucket in the spending priority list.
+  - Spending priority (allow visually ordering the buckets in order of selling first to cover expenses). All buckets are subject to selling if needed to cover expenses, in order of spending priority.
+  - Cash floor (in months of expenses calculated after converted to expenses currency): When selling to cover expenses, keep at least this amount in the bucket. If the bucket has hit the cash floor, sell from the next bucket in the spending priority list.
+  - Required Runaway (in months of expenses) before trigger-based selling (to avoid selling in a market crash when the price is low)
+  - Allow adding triggers to each bucket. Each trigger is one of two types:
+    - **Sell triggers** (subtypes):
+      1. **Take Profit**: sell if `actual_growth% / target_growth% >= X`. Use profit to refill a configurable target bucket.
+      2. **Share exceeds X%**: sell if the bucket's share of the total portfolio (in expenses currency) exceeds X%.
+    - **Buy triggers** (subtypes):
+      1. **Discount >= X%**: buy if `100 * target_price / current_price - 100 > X%`. Funds come from a configurable source bucket that should be sold to cover the buy amount. If needed, fx should be applied.
+      2. **Share falls below X%**: buy if the bucket's share of the total portfolio (in expenses currency) falls below X%. Funds come from a configurable source bucket.
+  - Multiple triggers can be added to a single bucket
+  - **Rebalancing cost rules:** When a trigger causes selling bucket A to buy bucket B:
+    - Buy/sell fees are applied on both the sell side (bucket A fee) and the buy side (bucket B fee)
+    - Capital gain tax is applied on any realized gain from the sell (using the bucket's chosen cost basis method)
+    - If bucket A and bucket B are in different currencies, FX conversion is applied at the current simulated rate (plus conversion fee)
 
 - For each non-Expenses currecy:
   - Initial price (in Expenses currency)
