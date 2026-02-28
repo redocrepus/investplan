@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tail:*)",
+      "Bash(cd /c/dev/investplan && python -m pytest tests/ -v 2>&1)",
+      "Bash(cd /c/dev/investplan && python -c \"from gui.main_window import MainWindow; print\\('GUI imports OK'\\)\" 2>&1)"
+    ]
+  }
+}
