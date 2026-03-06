@@ -49,9 +49,11 @@ class BucketPanel(QGroupBox):
     def _refresh(self):
         self._list.clear()
         for b in self._buckets:
+            n_triggers = len(b.triggers)
+            trig_text = f", {n_triggers} trigger{'s' if n_triggers != 1 else ''}" if n_triggers else ""
             text = (f"{b.name} ({b.currency}) — "
                     f"{b.initial_amount:,.0f} @ {b.initial_price:,.2f}, "
-                    f"growth {b.growth_avg_pct}%")
+                    f"growth {b.growth_avg_pct}%{trig_text}")
             self._list.addItem(text)
 
     def _add(self):

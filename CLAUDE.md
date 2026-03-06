@@ -1,5 +1,7 @@
 # Agent Instructions
 
+Read readme.md and requirements.md before every response.
+
 ## Documentation Maintenance
 
 Every code change must include updates to all relevant documentation:

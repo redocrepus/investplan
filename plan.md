@@ -160,52 +160,78 @@ investplan/
 - [x] PyInstaller spec → single `.exe` for Windows
 - [x] Final review of `README.md` for completeness and accuracy
 
-### Stage 8 — Trigger System Refactoring
+### Stage 8 — Trigger System Refactoring ✅
 
-Currently `RebalancingParams` has a single sell trigger (take profit) and a single buy trigger (discount), plus `frequency`, `standby_bucket`, `buying_priority`, `spending_priority`, `cash_floor_months`, `required_runaway_months`. This stage replaces the single-trigger model with a flexible multi-trigger list per bucket.
+Replaced the single-trigger `RebalancingParams` model with a flexible multi-trigger list per bucket, added cost basis tracking (FIFO/LIFO/AVCO), and enforced rebalancing cost rules (fees on both sides, capital gain tax, FX conversion).
 
 **Model changes:**
-- [ ] Add `BucketTrigger` Pydantic model to `models/bucket.py`:
+- [x] Add `BucketTrigger` Pydantic model to `models/bucket.py`:
   - `trigger_type`: `"sell"` or `"buy"`
   - `subtype`: `"take_profit"` | `"share_exceeds"` (for sell), `"discount"` | `"share_below"` (for buy)
   - `threshold_pct`: float (the X value)
-  - `target_bucket`: Optional[str] — standby bucket (sell) or source bucket (buy)
+  - `target_bucket`: Optional[str] — target bucket (sell) or source bucket (buy)
   - `frequency`: `"monthly"` | `"yearly"`
-- [ ] Add `triggers: list[BucketTrigger] = []` field to `InvestmentBucket`
-- [ ] Add `cost_basis_method: str = "fifo"` field to `InvestmentBucket` (values: `"fifo"`, `"lifo"`, `"avco"`)
-- [ ] Keep `spending_priority`, `cash_floor_months`, `required_runaway_months` on `InvestmentBucket` directly (move out of `RebalancingParams`)
-- [ ] Remove `RebalancingParams` (its remaining fields are now on `BucketTrigger` or `InvestmentBucket`)
+- [x] Add `triggers: list[BucketTrigger] = []` field to `InvestmentBucket`
+- [x] Add `cost_basis_method: CostBasisMethod = "fifo"` field to `InvestmentBucket` (values: `"fifo"`, `"lifo"`, `"avco"`)
+- [x] Move `spending_priority`, `cash_floor_months`, `required_runaway_months` to `InvestmentBucket` directly
+- [x] Remove `RebalancingParams` (its fields are now on `BucketTrigger` or `InvestmentBucket`)
 
 **Engine changes:**
-- [ ] Refactor `engine/rebalancer.py` to iterate the trigger list:
-  - [ ] Sell/Take Profit: sell if `actual_growth% / target_growth% >= X`, proceeds → buy target bucket (apply fx if different currency)
-  - [ ] Sell/Share exceeds X%: sell if bucket share of portfolio > X%, proceeds → but target bucket
-  - [ ] Buy/Discount >= X%: buy if `100*target_price/current_price - 100 > X%`, sell from source bucket to fund
-  - [ ] Buy/Share below X%: buy if bucket share of portfolio < X%, sell from source bucket to fund
-  - [ ] All trigger sells/buys: apply buy/sell fees on both sides, capital gain tax on realized gains, FX conversion + fee when cross-currency
-  - [ ] Runaway guard applies to trigger-based sells only (not expense coverage)
-  - [ ] Expense coverage (Phase 2) unchanged: sell in spending priority order, respect cash floors
-- [ ] Update `BucketState` dataclass to hold trigger list instead of single sell/buy trigger fields
-- [ ] Implement cost basis tracking per bucket (FIFO / LIFO / AVCO) for capital gains calculation
-  - [ ] Track purchase lots (price, amount) for FIFO/LIFO
-  - [ ] Track weighted average cost for AVCO
-  - [ ] Use chosen method when computing realized gains on sell
-- [ ] Update `engine/simulator.py` to pass portfolio totals to rebalancer (needed for share% triggers)
+- [x] Refactor `engine/rebalancer.py` to iterate the trigger list:
+  - [x] Sell/Take Profit: sell if `actual_growth% / target_growth% >= X`, proceeds → buy target bucket (apply fx if different currency)
+  - [x] Sell/Share exceeds X%: sell if bucket share of portfolio > X%, proceeds → target bucket
+  - [x] Buy/Discount >= X%: buy if `100*target_price/current_price - 100 > X%`, sell from source bucket to fund
+  - [x] Buy/Share below X%: buy if bucket share of portfolio < X%, sell from source bucket to fund
+  - [x] All trigger sells/buys: apply buy/sell fees on both sides, capital gain tax on realized gains, FX conversion + fee when cross-currency
+  - [x] Runaway guard applies to trigger-based sells only (not expense coverage)
+  - [x] Expense coverage (Phase 3) unchanged: sell in spending priority order, respect cash floors
+- [x] Update `BucketState` dataclass to hold trigger list instead of single sell/buy trigger fields
+- [x] Implement cost basis tracking per bucket (FIFO / LIFO / AVCO) for capital gains calculation
+  - [x] Track purchase lots (price, amount) for FIFO/LIFO
+  - [x] Track weighted average cost for AVCO
+  - [x] Use chosen method when computing realized gains on sell
+- [x] Update `engine/simulator.py` to initialize BucketState from new model fields
 
 **GUI changes:**
-- [ ] Refactor `gui/dialogs/bucket_dialog.py`:
-  - [ ] Replace single sell/buy trigger fields with a trigger list (add/edit/remove)
-  - [ ] Each trigger row: type dropdown, subtype dropdown, threshold spin, target bucket combo
-  - [ ] Move spending_priority, cash_floor, required_runaway out of the old rebalancing group
-  - [ ] Add cost basis method dropdown (FIFO / LIFO / AVCO) to bucket fields
-- [ ] Update `gui/panels/bucket_panel.py` — show trigger count/summary in bucket list
+- [x] Refactor `gui/dialogs/bucket_dialog.py`:
+  - [x] Replace single sell/buy trigger fields with a trigger list (add/edit/remove) via `TriggerDialog`
+  - [x] Each trigger row: type dropdown, subtype dropdown, threshold spin, target bucket combo
+  - [x] Move spending_priority, cash_floor, required_runaway to "Expense Coverage" group
+  - [x] Add cost basis method dropdown (FIFO / LIFO / AVCO) to bucket fields
+- [x] Update `gui/panels/bucket_panel.py` — show trigger count in bucket list
 
 **Tests & serialization:**
-- [ ] Update `tests/test_rebalancer.py` — test all four trigger subtypes, multi-trigger scenarios
-- [ ] Add tests for share% triggers (need portfolio total calculation)
-- [ ] Add tests for cost basis methods (FIFO, LIFO, AVCO) — verify correct gain calculation
-- [ ] Add tests for cross-currency trigger rebalancing (fees, FX, tax)
-- [ ] Verify save/load roundtrip with new trigger model (backward-compatible with old JSON if possible)
+- [x] Update `tests/test_rebalancer.py` — test all four trigger subtypes, multi-trigger scenarios
+- [x] Add tests for share% triggers (portfolio total calculation)
+- [x] Add tests for cost basis methods (FIFO, LIFO, AVCO) — verify correct gain calculation
+- [x] Add tests for cross-currency trigger rebalancing (fees, FX, tax)
+- [x] Verify save/load roundtrip with new trigger model
+
+### Stage 9 — Bug Fixes & Hardening
+
+Critical fixes identified during code review. Tests must be strengthened to assert correct values, not just non-zero output.
+
+**P0 — Critical calculation bugs:**
+- [ ] Fix `_compute_cost_basis()` in `engine/rebalancer.py` — currently returns unit counts instead of cost values. FIFO/LIFO must accumulate `take * lot.price`; AVCO must return `sell_amount * state.avg_cost`
+- [ ] Fix fee/tax currency unit mixing in `engine/rebalancer.py` — `fees_paid` and `tax_paid` accumulate values in inconsistent currency units (some in bucket currency, some in expenses currency). Normalize all to expenses currency before accumulating
+- [ ] Strengthen cost basis tests with exact expected values (not just `tax_paid > 0`)
+
+**P1 — Missing requirement & volatility bug:**
+- [ ] Implement expense coverage fallback in `engine/rebalancer.py` — when all buckets hit cash floor, sell in reverse spending priority order even if it violates the floor (per Requirements.md)
+- [ ] Fix inflation volatility double-scaling in `engine/inflation.py` — `spec.monthly_sigma / 12.0` divides an already-monthly sigma by 12 again, killing volatility. Remove the `/ 12.0`
+- [ ] Add test for expense coverage fallback (all buckets at floor)
+- [ ] Add test verifying inflation volatility range matches profile
+
+**P2 — Logic fixes & validation:**
+- [ ] Fix yearly trigger month logic in `engine/rebalancer.py` — `month_idx % 12 != 0` fires in January; decide on correct month and document
+- [ ] Add trigger target bucket reference validation in `gui/main_window.py` — reject configs where `trigger.target_bucket` doesn't exist in `config.buckets`
+- [ ] Add currency mismatch validation — reject buckets referencing currencies without FX settings
+- [ ] Prevent self-referential triggers (bucket targeting itself)
+- [ ] Add rebalancer tests using `month_idx > 0` to cover yearly trigger logic
+
+**P3 — Robustness improvements:**
+- [ ] Add exception handling in `SimulationThread` — propagate errors to GUI
+- [ ] Improve `_autosave()` error handling — log or notify instead of silently swallowing exceptions
 
 ---
 

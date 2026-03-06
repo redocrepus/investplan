@@ -1,31 +1,50 @@
-"""Investment bucket and rebalancing parameters models."""
+"""Investment bucket, triggers, and rebalancing models."""
 
+from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, model_validator
 from utils.volatility import VolatilityProfile
 
 
-class RebalancingParams(BaseModel):
-    """Target-trajectory rebalancing configuration for a bucket."""
+class TriggerType(str, Enum):
+    SELL = "sell"
+    BUY = "buy"
+
+
+class SellSubtype(str, Enum):
+    TAKE_PROFIT = "take_profit"
+    SHARE_EXCEEDS = "share_exceeds"
+
+
+class BuySubtype(str, Enum):
+    DISCOUNT = "discount"
+    SHARE_BELOW = "share_below"
+
+
+class CostBasisMethod(str, Enum):
+    FIFO = "fifo"
+    LIFO = "lifo"
+    AVCO = "avco"
+
+
+class BucketTrigger(BaseModel):
+    """A single trigger (sell or buy) attached to an investment bucket."""
+    trigger_type: TriggerType
+    subtype: str  # SellSubtype or BuySubtype value
+    threshold_pct: float  # the X value (ratio for take_profit, percent for others)
+    target_bucket: Optional[str] = None  # target bucket (sell) or source bucket (buy)
     frequency: str = "monthly"  # "monthly" or "yearly"
-    sell_trigger: float = 1.5   # sell if actual_growth/target_growth > X
-    standby_bucket: Optional[str] = None  # name of the standby bucket to buy
-    buy_trigger: float = 5.0    # buy if 100*target_price/current_price - 100 > X%
-    buying_priority: int = 0    # lower = buy first
-    required_runaway_months: float = 6.0  # months of expenses required before selling
-    spending_priority: int = 0  # lower = sell first for expenses
-    cash_floor_months: float = 0.0  # keep at least this many months of expenses
 
     @model_validator(mode="after")
     def _check_values(self):
         if self.frequency not in ("monthly", "yearly"):
             raise ValueError("frequency must be 'monthly' or 'yearly'")
-        if self.sell_trigger <= 0:
-            raise ValueError("sell_trigger must be > 0")
-        if self.required_runaway_months < 0:
-            raise ValueError("required_runaway_months must be >= 0")
-        if self.cash_floor_months < 0:
-            raise ValueError("cash_floor_months must be >= 0")
+        if self.trigger_type == TriggerType.SELL:
+            if self.subtype not in (SellSubtype.TAKE_PROFIT.value, SellSubtype.SHARE_EXCEEDS.value):
+                raise ValueError(f"Invalid sell subtype: {self.subtype}")
+        elif self.trigger_type == TriggerType.BUY:
+            if self.subtype not in (BuySubtype.DISCOUNT.value, BuySubtype.SHARE_BELOW.value):
+                raise ValueError(f"Invalid buy subtype: {self.subtype}")
         return self
 
 
@@ -41,7 +60,15 @@ class InvestmentBucket(BaseModel):
     volatility: VolatilityProfile = VolatilityProfile.SP500
     buy_sell_fee_pct: float = 0.0
     target_growth_pct: float = 7.0
-    rebalancing: RebalancingParams = RebalancingParams()
+    cost_basis_method: CostBasisMethod = CostBasisMethod.FIFO
+
+    # Rebalancing — bucket-level fields
+    spending_priority: int = 0       # lower = sell first for expenses
+    cash_floor_months: float = 0.0   # keep at least this many months of expenses
+    required_runaway_months: float = 6.0  # months of expenses required before trigger-based selling
+
+    # Multi-trigger list
+    triggers: list[BucketTrigger] = []
 
     @model_validator(mode="after")
     def _check_bounds(self):
@@ -55,4 +82,8 @@ class InvestmentBucket(BaseModel):
             raise ValueError("initial_amount must be >= 0")
         if self.buy_sell_fee_pct < 0:
             raise ValueError("buy_sell_fee_pct must be >= 0")
+        if self.cash_floor_months < 0:
+            raise ValueError("cash_floor_months must be >= 0")
+        if self.required_runaway_months < 0:
+            raise ValueError("required_runaway_months must be >= 0")
         return self

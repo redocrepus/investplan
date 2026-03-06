@@ -31,8 +31,9 @@ GUI: Excel like table where rows are months and columns are customizable financi
   - Capital gains cost basis method: FIFO (default), LIFO, or AVCO
   - Target growth (in percent)
   - Spending priority (allow visually ordering the buckets in order of selling first to cover expenses). All buckets are subject to selling if needed to cover expenses, in order of spending priority.
-  - Cash floor (in months of expenses calculated after converted to expenses currency): When selling to cover expenses, keep at least this amount in the bucket. If the bucket has hit the cash floor, sell from the next bucket in the spending priority list.
-  - Required Runaway (in months of expenses) before trigger-based selling (to avoid selling in a market crash when the price is low)
+  - Cash floor (in months of expenses calculated after converted to expenses currency): When selling (including for expenses coverage), keep at least this amount in the bucket if possible (to avoid selling other assets a market crash when the price is low).
+
+  
   - Allow adding triggers to each bucket. Each trigger is one of two types:
     - **Sell triggers** (subtypes):
       1. **Take Profit**: sell if `actual_growth% / target_growth% >= X`. Use profit to refill a configurable target bucket.
@@ -55,6 +56,12 @@ GUI: Excel like table where rows are months and columns are customizable financi
 
 All the parameters should be editable at any time between simulations.
 
+## Monthly expenses rules
+At the beginning of each month:
+1. Find the total expenses for the month according to the defined expense periods and the inflation.
+2. Cover the expenses by selling the bucket in order of highest profitability, respecting the cash floor guards. The profitability of selling a bucket is calculated as the gross gain after converting to expenses currency applying the current FX rate if needed and the fees. If there are no profitable buckets to sell, sell from buckets in order of spending priority, respecting the cash floor guards, even if it means selling at a loss. If all buckets hit the cash floor sell in the reverse order of spending priority, even if it means selling at a loss AND violating the cash floor.
+
+
 
 ## Output
 
@@ -62,7 +69,7 @@ All the parameters should be editable at any time between simulations.
 - Year/month number (allow toggling between a row showing per year and per number)
 - Inflation
 - Expenses
-- Total Net-Spent (in Expenses currency) This is the sum of Net-Spent of all buckets. This column is for validation. It  should be always equal to the expenses column. If it is less than the expenses column, mark the cell in red to indicate that the strategy is not covering the expenses.
+- Total Net-Spent (in Expenses currency) This is the sum of Net-Spent of all buckets. This column is for validation. It  should be always equal to the expenses column. If it is less than the expenses column, mark the cell in red to indicate that the strategy is not covering the expenses. If it is more that the expenses  column, show an error message to indicate that there is a problem with the calculations (there is no sense in covering more than the expenses, this means that there is a problem in the calculations, for example not applying the cash floor correctly).
 
 ### Columns per bucket
 
@@ -73,6 +80,7 @@ When collapsed show:
 - Price (in Expenses currency)
 - Total amount at the end of the month/year (in currency)
 - Total amount at the end of the month/year (in Expenses currency)
+- If the Total amount at the end of the month/year (in Expenses currency) is less than Cash floor, mark the cell in red to indicate that the cash floor has been violated.
 When expanded, in addition show:
 - Amount sold (in currency)
 - Amount sold (in Expenses currency)

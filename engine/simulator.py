@@ -3,32 +3,33 @@
 import numpy as np
 import pandas as pd
 from models.config import SimConfig
+from models.bucket import InvestmentBucket
 from engine.inflation import simulate_monthly_inflation
 from engine.currency import simulate_fx_rates
 from engine.bucket import simulate_bucket_prices
 from engine.expenses import compute_monthly_expenses
-from engine.rebalancer import BucketState, execute_rebalance, get_fx_rate
+from engine.rebalancer import BucketState, PurchaseLot, execute_rebalance, get_fx_rate, _add_purchase_lot
 
 
-def _init_bucket_state(bucket, price: float) -> BucketState:
-    """Create a BucketState from a bucket model and initial price."""
-    return BucketState(
+def _init_bucket_state(bucket: InvestmentBucket) -> BucketState:
+    """Create a BucketState from a bucket model."""
+    state = BucketState(
         name=bucket.name,
         currency=bucket.currency,
-        price=price,
+        price=bucket.initial_price,
         amount=bucket.initial_amount,
         initial_price=bucket.initial_price,
         target_growth_pct=bucket.target_growth_pct,
         buy_sell_fee_pct=bucket.buy_sell_fee_pct,
-        sell_trigger=bucket.rebalancing.sell_trigger,
-        standby_bucket=bucket.rebalancing.standby_bucket,
-        buy_trigger=bucket.rebalancing.buy_trigger,
-        buying_priority=bucket.rebalancing.buying_priority,
-        required_runaway_months=bucket.rebalancing.required_runaway_months,
-        spending_priority=bucket.rebalancing.spending_priority,
-        cash_floor_months=bucket.rebalancing.cash_floor_months,
-        frequency=bucket.rebalancing.frequency,
+        spending_priority=bucket.spending_priority,
+        cash_floor_months=bucket.cash_floor_months,
+        required_runaway_months=bucket.required_runaway_months,
+        triggers=list(bucket.triggers),
+        cost_basis_method=bucket.cost_basis_method,
     )
+    # Initialize with one lot at initial price
+    _add_purchase_lot(state, bucket.initial_amount, bucket.initial_price)
+    return state
 
 
 def run_simulation(config: SimConfig, rng: np.random.Generator) -> pd.DataFrame:
@@ -62,7 +63,7 @@ def run_simulation(config: SimConfig, rng: np.random.Generator) -> pd.DataFrame:
     # Initialize bucket states
     bucket_states = []
     for bucket in config.buckets:
-        state = _init_bucket_state(bucket, bucket.initial_price)
+        state = _init_bucket_state(bucket)
         bucket_states.append(state)
 
     # Monthly simulation loop

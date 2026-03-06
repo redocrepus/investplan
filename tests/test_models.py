@@ -4,7 +4,10 @@ import pytest
 from models.inflation import InflationSettings
 from models.expense import ExpensePeriod, OneTimeExpense
 from models.currency import CurrencySettings
-from models.bucket import InvestmentBucket, RebalancingParams
+from models.bucket import (
+    InvestmentBucket, BucketTrigger, TriggerType, SellSubtype, BuySubtype,
+    CostBasisMethod,
+)
 from models.config import SimConfig
 from utils.volatility import InflationVolatility, ExpenseVolatility, VolatilityProfile
 
@@ -124,23 +127,92 @@ class TestInvestmentBucket:
                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
             )
 
-    def test_rebalancing_defaults(self):
+    def test_defaults(self):
         b = InvestmentBucket(
             name="X", initial_price=100, initial_amount=10000,
             growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
         )
-        assert b.rebalancing.frequency == "monthly"
-        assert b.rebalancing.sell_trigger == 1.5
+        assert b.spending_priority == 0
+        assert b.cash_floor_months == 0.0
+        assert b.required_runaway_months == 6.0
+        assert b.cost_basis_method == CostBasisMethod.FIFO
+        assert b.triggers == []
+
+    def test_with_triggers(self):
+        t = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.TAKE_PROFIT.value,
+            threshold_pct=1.5,
+            target_bucket="Cash",
+        )
+        b = InvestmentBucket(
+            name="SP500", initial_price=100, initial_amount=10000,
+            growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+            triggers=[t],
+        )
+        assert len(b.triggers) == 1
+        assert b.triggers[0].subtype == "take_profit"
 
 
-class TestRebalancingParams:
+class TestBucketTrigger:
+    def test_valid_sell_take_profit(self):
+        t = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.TAKE_PROFIT.value,
+            threshold_pct=1.5,
+        )
+        assert t.trigger_type == TriggerType.SELL
+
+    def test_valid_sell_share_exceeds(self):
+        t = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.SHARE_EXCEEDS.value,
+            threshold_pct=60.0,
+        )
+        assert t.subtype == "share_exceeds"
+
+    def test_valid_buy_discount(self):
+        t = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.DISCOUNT.value,
+            threshold_pct=5.0,
+            target_bucket="Cash",
+        )
+        assert t.subtype == "discount"
+
+    def test_valid_buy_share_below(self):
+        t = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=20.0,
+            target_bucket="Cash",
+        )
+        assert t.subtype == "share_below"
+
+    def test_invalid_sell_subtype(self):
+        with pytest.raises(ValueError):
+            BucketTrigger(
+                trigger_type=TriggerType.SELL,
+                subtype="discount",
+                threshold_pct=1.5,
+            )
+
+    def test_invalid_buy_subtype(self):
+        with pytest.raises(ValueError):
+            BucketTrigger(
+                trigger_type=TriggerType.BUY,
+                subtype="take_profit",
+                threshold_pct=1.5,
+            )
+
     def test_invalid_frequency(self):
         with pytest.raises(ValueError):
-            RebalancingParams(frequency="weekly")
-
-    def test_negative_sell_trigger(self):
-        with pytest.raises(ValueError):
-            RebalancingParams(sell_trigger=-1)
+            BucketTrigger(
+                trigger_type=TriggerType.SELL,
+                subtype=SellSubtype.TAKE_PROFIT.value,
+                threshold_pct=1.5,
+                frequency="weekly",
+            )
 
 
 class TestSimConfig:
