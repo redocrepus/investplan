@@ -4,13 +4,14 @@ from PyQt6.QtWidgets import QHeaderView, QStyleOptionHeader, QStyle
 from PyQt6.QtCore import Qt, QRect, QPoint
 from PyQt6.QtGui import QPainter, QMouseEvent
 from models.config import SimConfig
-from gui.table.model import FIXED_COLUMNS, BUCKET_EXPANDED_COLS, BUCKET_COLLAPSED_COLS
+from gui.table.model import FIXED_COLUMNS, CASH_POOL_COLUMNS, BUCKET_EXPANDED_COLS, BUCKET_COLLAPSED_COLS
 
 
 # Short display labels for column sub-headers
 _COL_LABELS = {
     "year": "Year", "month": "Month", "inflation": "Inflation",
     "expenses": "Expenses", "total_net_spent": "Total Net-Spent",
+    "cash_pool_amount": "Amount", "cash_pool_net_spent": "Net Spent",
     "price": "Price", "price_exp": "Price ($)", "amount": "Amount",
     "amount_exp": "Amount ($)", "sold": "Sold", "sold_exp": "Sold ($)",
     "bought": "Bought", "fees": "Fees", "tax": "Tax", "net_spent": "Net-Spent",
@@ -35,7 +36,7 @@ class TwoLevelHeaderView(QHeaderView):
         self.viewport().update()
 
     def _compute_spans(self):
-        """Compute which columns belong to each bucket group."""
+        """Compute which columns belong to each bucket/cash pool group."""
         self._bucket_spans = []
         if not self._config:
             return
@@ -45,6 +46,14 @@ class TwoLevelHeaderView(QHeaderView):
 
         n_fixed = len(FIXED_COLUMNS)
         col = n_fixed
+
+        # Cash pool group (if active)
+        cp = self._config.cash_pool
+        if cp.initial_amount > 0 or cp.refill_target_months > 0:
+            n_cp = len(CASH_POOL_COLUMNS)
+            self._bucket_spans.append(("Cash Pool", col, col + n_cp - 1))
+            col += n_cp
+
         for bucket in self._config.buckets:
             # Determine how many cols this bucket has by checking the model
             from gui.table.model import SimTableModel

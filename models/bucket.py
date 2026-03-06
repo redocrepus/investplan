@@ -33,12 +33,12 @@ class BucketTrigger(BaseModel):
     subtype: str  # SellSubtype or BuySubtype value
     threshold_pct: float  # the X value (ratio for take_profit, percent for others)
     target_bucket: Optional[str] = None  # target bucket (sell) or source bucket (buy)
-    frequency: str = "monthly"  # "monthly" or "yearly"
+    period_months: int = 1  # check every N months (1=monthly, 12=yearly)
 
     @model_validator(mode="after")
     def _check_values(self):
-        if self.frequency not in ("monthly", "yearly"):
-            raise ValueError("frequency must be 'monthly' or 'yearly'")
+        if self.period_months < 1:
+            raise ValueError("period_months must be >= 1")
         if self.trigger_type == TriggerType.SELL:
             if self.subtype not in (SellSubtype.TAKE_PROFIT.value, SellSubtype.SHARE_EXCEEDS.value):
                 raise ValueError(f"Invalid sell subtype: {self.subtype}")

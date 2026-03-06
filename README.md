@@ -5,12 +5,13 @@ Application for investment strategy planning and Monte Carlo simulation.
 ## Features
 
 - Configurable investment buckets with growth, volatility, and rebalancing parameters
-- Multi-trigger system per bucket: sell (take profit, share exceeds) and buy (discount, share below) triggers
+- Cash pool: expenses-currency cash reserve with auto-refill from most profitable buckets
+- Multi-trigger system per bucket: sell (take profit, share exceeds) and buy (discount, share below) triggers with configurable period (every N months)
 - Capital gains cost basis tracking: FIFO, LIFO, or AVCO per bucket
 - Rebalancing cost rules: buy/sell fees on both sides, capital gain tax, FX conversion fees
 - Monthly expense periods with inflation adjustment
 - Multi-currency support with FX simulation
-- Expense coverage via spending priority cascade with cash floor guards and runaway protection
+- Expense coverage via cash pool (when active) or spending priority cascade with cash floor guards and runaway protection
 - Monte Carlo simulation with success rate and percentile statistics
 - Save/load configuration to JSON
 - Auto-save/restore last session on exit/launch

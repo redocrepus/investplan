@@ -34,6 +34,7 @@ GUI: Excel like table where rows are months and columns are customizable financi
   - Cash floor (in months of expenses calculated after converted to expenses currency): When selling (including for expenses coverage), keep at least this amount in the bucket if possible (to avoid selling other assets a market crash when the price is low).
 
   
+  - Each trigger has a `period_months` parameter (integer >= 1): the trigger is checked every N months. 1 = monthly, 12 = yearly, any value supported.
   - Allow adding triggers to each bucket. Each trigger is one of two types:
     - **Sell triggers** (subtypes):
       1. **Take Profit**: sell if `actual_growth% / target_growth% >= X`. Use profit to refill a configurable target bucket.
@@ -53,6 +54,14 @@ GUI: Excel like table where rows are months and columns are customizable financi
   - Expected average (in Expenses currency)
   - Volatility profile [const(average), gov-bonds, s&p500, gold, bitcoin]
   - Conversion fee to/from the Expenses currency (in percent)
+
+- Cash Pool (expenses-currency cash reserve)
+  - Initial amount (in expenses currency)
+  - Refill target (in months of expenses): when the cash pool drops below this level, auto-refill by selling from investment buckets
+  - Cash floor (in months of expenses): hard floor for the cash pool itself
+  - Expenses are drawn exclusively from the cash pool when active
+  - Refill source order: sell from the most profitable bucket first (gross gain after FX + fees). If no profitable buckets, sell in spending priority order. Source bucket cash floors are respected.
+  - Sell fees, capital gains tax (using source bucket's cost basis method), and FX conversion fees apply during refill.
 
 All the parameters should be editable at any time between simulations.
 

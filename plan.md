@@ -233,6 +233,33 @@ Critical fixes identified during code review. Tests must be strengthened to asse
 - [ ] Add exception handling in `SimulationThread` — propagate errors to GUI
 - [ ] Improve `_autosave()` error handling — log or notify instead of silently swallowing exceptions
 
+### Stage 10 — Cash Pool & Trigger Period ✅
+
+Added a cash pool (expenses-currency cash reserve) and changed trigger frequency from `"monthly"/"yearly"` to `period_months: int`.
+
+**Model changes:**
+- [x] Add `CashPool` Pydantic model to `models/config.py` (initial_amount, refill_target_months, cash_floor_months)
+- [x] Add `cash_pool: CashPool` field to `SimConfig`
+- [x] Replace `frequency: str` with `period_months: int` on `BucketTrigger` in `models/bucket.py`
+
+**Engine changes:**
+- [x] Add `CashPoolState` dataclass to `engine/rebalancer.py`
+- [x] Reorder rebalance phases: sell triggers → cover expenses from cash pool → refill cash pool → buy triggers
+- [x] Implement cash pool refill logic: sell most profitable bucket first, respect cash floors, apply fees/tax/FX
+- [x] Update trigger period check: `month_idx % trigger.period_months != 0`
+- [x] Update `engine/simulator.py`: init `CashPoolState`, pass to rebalancer, add output columns
+
+**GUI changes:**
+- [x] Add Cash Pool group box to `gui/panels/global_panel.py` (initial amount, refill target, cash floor)
+- [x] Replace frequency combo with period_months spinner in `gui/dialogs/bucket_dialog.py`
+- [x] Add Cash Pool column group to `gui/table/model.py` and `gui/table/header.py`
+
+**Tests:**
+- [x] Cash pool expense drawing, shortfall, refill, profitability ordering, cash floor respect, fees
+- [x] Trigger `period_months` logic (monthly, quarterly, yearly)
+- [x] `CashPool` and `BucketTrigger.period_months` model validation
+- [x] Simulator cash pool output columns
+
 ---
 
 ## Key Design Decisions
@@ -253,9 +280,10 @@ Growth and FX rates are modeled as log-normal random walks. Inflation uses a mea
 1. Apply growth to all bucket prices
 2. Apply FX changes
 3. Calculate this month's expenses (inflation-adjusted)
-4. Run sell triggers: Take Profit (profit → standby bucket), Share exceeds X% — subject to runaway guard
-5. Run buy triggers: Discount >= X%, Share falls below X% — funds from configured source bucket
-6. Cover expenses: sell from buckets in spending priority order (respecting cash floors)
-7. Record all outputs to the DataFrame row
+4. Run sell triggers (period_months check): Take Profit, Share exceeds X% — subject to runaway guard
+5. Cover expenses: draw from cash pool (if active) or sell from buckets in spending priority order
+6. Refill cash pool: if below target, sell from most profitable bucket first (respecting cash floors)
+7. Run buy triggers (period_months check): Discount >= X%, Share falls below X% — funds from source bucket
+8. Record all outputs to the DataFrame row
 
 **Currency handling:** All cross-currency amounts are converted to Expenses currency at the current simulated FX rate. Fees apply on conversion.

@@ -1,4 +1,4 @@
-"""Rebalancing logic — multi-trigger system, cost basis tracking, expense coverage."""
+"""Rebalancing logic — multi-trigger system, cost basis tracking, cash pool, expense coverage."""
 
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -43,6 +43,16 @@ class BucketState:
     fees_paid: float = 0.0
     tax_paid: float = 0.0
     net_spent: float = 0.0
+
+
+@dataclass
+class CashPoolState:
+    """Mutable state for the cash pool (expenses currency only)."""
+    amount: float = 0.0
+    refill_target_months: float = 24.0
+    cash_floor_months: float = 12.0
+    # Monthly tracking
+    net_spent: float = 0.0  # expenses drawn this month
 
 
 def get_fx_rate(bucket_currency: str, expenses_currency: str,
@@ -148,6 +158,25 @@ def _portfolio_total_expenses_currency(
         _bucket_value_in_expenses_currency(b, get_fx_rate(b.currency, expenses_currency, fx_rates))
         for b in bucket_states
     )
+
+
+def _bucket_profitability(
+    b: BucketState, fx_rate: float, fee_pct: float,
+    conv_fee_pct: float, expenses_currency: str,
+) -> float:
+    """Compute profitability of selling from a bucket: gross gain after FX + fees."""
+    value_exp = b.amount * fx_rate
+    fee_cost = value_exp * fee_pct / 100.0
+    conv_cost = 0.0
+    if b.currency != expenses_currency:
+        conv_cost = value_exp * conv_fee_pct / 100.0
+    # Gain = current value - cost basis (approximated by initial price ratio)
+    if b.initial_price > 0:
+        gain_ratio = (b.price - b.initial_price) / b.initial_price
+    else:
+        gain_ratio = 0.0
+    gross_gain = value_exp * gain_ratio - fee_cost - conv_cost
+    return gross_gain
 
 
 def _execute_sell_trigger(
@@ -363,68 +392,63 @@ def _execute_buy_trigger(
     _add_purchase_lot(buyer, invested, buyer.price)
 
 
-def execute_rebalance(
+def _refill_cash_pool(
+    cash_pool: CashPoolState,
     bucket_states: list[BucketState],
     month_expense: float,
     fx_rates: dict[str, float],
     config: SimConfig,
-    month_idx: int,
-) -> float:
-    """Execute full rebalancing pass for one month.
+) -> None:
+    """Refill cash pool from investment buckets when below target.
 
-    Returns the total amount covered toward expenses (in expenses currency).
+    Sells from most profitable bucket first, respecting source cash floors.
+    If no profitable buckets, sells in spending priority order.
     """
+    if month_expense <= 0:
+        return
+
+    target_amount = cash_pool.refill_target_months * month_expense
+    if cash_pool.amount >= target_amount:
+        return
+
+    needed = target_amount - cash_pool.amount
     expenses_currency = config.expenses_currency
     capital_gain_tax_pct = config.capital_gain_tax_pct
 
-    # Reset monthly tracking
+    # Compute profitability for each bucket
+    bucket_profit = []
     for b in bucket_states:
-        b.amount_sold = 0.0
-        b.amount_bought = 0.0
-        b.fees_paid = 0.0
-        b.tax_paid = 0.0
-        b.net_spent = 0.0
-
-    # --- Phase 1: Execute sell triggers ---
-    for b in bucket_states:
-        for trigger in b.triggers:
-            if trigger.trigger_type != TriggerType.SELL:
-                continue
-            if trigger.frequency == "yearly" and month_idx % 12 != 0:
-                continue
-            _execute_sell_trigger(trigger, b, bucket_states, month_expense, fx_rates, config)
-
-    # --- Phase 2: Execute buy triggers ---
-    for b in bucket_states:
-        for trigger in b.triggers:
-            if trigger.trigger_type != TriggerType.BUY:
-                continue
-            if trigger.frequency == "yearly" and month_idx % 12 != 0:
-                continue
-            _execute_buy_trigger(trigger, b, bucket_states, month_expense, fx_rates, config)
-
-    # --- Phase 3: Cover expenses via spending priority cascade ---
-    remaining_expense = month_expense
-    spending_order = sorted(bucket_states, key=lambda b: b.spending_priority)
-
-    for b in spending_order:
-        if remaining_expense <= 0:
-            break
-
         fx = get_fx_rate(b.currency, expenses_currency, fx_rates)
+        conv_fee_pct = get_conversion_fee_pct(b.currency, expenses_currency, config)
+        profit = _bucket_profitability(b, fx, b.buy_sell_fee_pct, conv_fee_pct, expenses_currency)
+        bucket_profit.append((b, profit, fx))
+
+    # Separate profitable and unprofitable
+    profitable = [(b, p, fx) for b, p, fx in bucket_profit if p > 0]
+    unprofitable = [(b, p, fx) for b, p, fx in bucket_profit if p <= 0]
+
+    # Sort profitable by profitability descending (sell most profitable first)
+    profitable.sort(key=lambda x: x[1], reverse=True)
+    # Sort unprofitable by spending priority ascending
+    unprofitable.sort(key=lambda x: x[0].spending_priority)
+
+    # Try profitable first, then unprofitable
+    sell_order = profitable + unprofitable
+
+    for b, _profit, fx in sell_order:
+        if needed <= 0:
+            break
         if fx <= 0:
             continue
 
         bucket_value_expenses = b.amount * fx
-
-        # Cash floor: keep at least cash_floor_months of expenses
         floor_amount_expenses = b.cash_floor_months * month_expense
         available_expenses = max(0, bucket_value_expenses - floor_amount_expenses)
 
         if available_expenses <= 0:
             continue
 
-        sell_expenses = min(remaining_expense, available_expenses)
+        sell_expenses = min(needed, available_expenses)
         sell_bucket_currency = sell_expenses / fx
 
         net_proceeds, fee = compute_sell(sell_bucket_currency, b.buy_sell_fee_pct)
@@ -447,9 +471,113 @@ def execute_rebalance(
         b.amount_sold += sell_bucket_currency
         b.fees_paid += fee * fx
         b.tax_paid += tax * fx
-        b.net_spent += net_in_expenses
 
-        remaining_expense -= net_in_expenses
+        cash_pool.amount += net_in_expenses
+        needed -= net_in_expenses
 
-    total_covered = month_expense - max(0, remaining_expense)
+
+def execute_rebalance(
+    bucket_states: list[BucketState],
+    month_expense: float,
+    fx_rates: dict[str, float],
+    config: SimConfig,
+    month_idx: int,
+    cash_pool: CashPoolState | None = None,
+) -> float:
+    """Execute full rebalancing pass for one month.
+
+    Returns the total amount covered toward expenses (in expenses currency).
+    """
+    expenses_currency = config.expenses_currency
+
+    # Reset monthly tracking
+    for b in bucket_states:
+        b.amount_sold = 0.0
+        b.amount_bought = 0.0
+        b.fees_paid = 0.0
+        b.tax_paid = 0.0
+        b.net_spent = 0.0
+
+    if cash_pool is not None:
+        cash_pool.net_spent = 0.0
+
+    # --- Phase 1: Execute sell triggers ---
+    for b in bucket_states:
+        for trigger in b.triggers:
+            if trigger.trigger_type != TriggerType.SELL:
+                continue
+            if trigger.period_months > 1 and month_idx % trigger.period_months != 0:
+                continue
+            _execute_sell_trigger(trigger, b, bucket_states, month_expense, fx_rates, config)
+
+    # --- Phase 2: Cover expenses ---
+    if cash_pool is not None:
+        # Draw expenses from cash pool
+        drawn = min(cash_pool.amount, month_expense)
+        cash_pool.amount -= drawn
+        cash_pool.net_spent = drawn
+        remaining_expense = month_expense - drawn
+        # Any shortfall is uncovered (will show as red in output)
+        total_covered = drawn
+    else:
+        # Legacy path: cover expenses from buckets directly
+        remaining_expense = month_expense
+        capital_gain_tax_pct = config.capital_gain_tax_pct
+        spending_order = sorted(bucket_states, key=lambda b: b.spending_priority)
+
+        for b in spending_order:
+            if remaining_expense <= 0:
+                break
+
+            fx = get_fx_rate(b.currency, expenses_currency, fx_rates)
+            if fx <= 0:
+                continue
+
+            bucket_value_expenses = b.amount * fx
+            floor_amount_expenses = b.cash_floor_months * month_expense
+            available_expenses = max(0, bucket_value_expenses - floor_amount_expenses)
+
+            if available_expenses <= 0:
+                continue
+
+            sell_expenses = min(remaining_expense, available_expenses)
+            sell_bucket_currency = sell_expenses / fx
+
+            net_proceeds, fee = compute_sell(sell_bucket_currency, b.buy_sell_fee_pct)
+
+            cost_basis = _compute_cost_basis(b, sell_bucket_currency)
+            gain = net_proceeds - cost_basis
+            tax = max(0, gain * capital_gain_tax_pct / 100.0)
+            after_tax = net_proceeds - tax
+
+            conv_fee_pct = get_conversion_fee_pct(b.currency, expenses_currency, config)
+            net_in_expenses = after_tax * fx
+            if b.currency != expenses_currency:
+                fx_fee = net_in_expenses * conv_fee_pct / 100.0
+                net_in_expenses -= fx_fee
+                b.fees_paid += fx_fee
+
+            b.amount -= sell_bucket_currency
+            b.amount_sold += sell_bucket_currency
+            b.fees_paid += fee * fx
+            b.tax_paid += tax * fx
+            b.net_spent += net_in_expenses
+
+            remaining_expense -= net_in_expenses
+
+        total_covered = month_expense - max(0, remaining_expense)
+
+    # --- Phase 3: Refill cash pool ---
+    if cash_pool is not None:
+        _refill_cash_pool(cash_pool, bucket_states, month_expense, fx_rates, config)
+
+    # --- Phase 4: Execute buy triggers ---
+    for b in bucket_states:
+        for trigger in b.triggers:
+            if trigger.trigger_type != TriggerType.BUY:
+                continue
+            if trigger.period_months > 1 and month_idx % trigger.period_months != 0:
+                continue
+            _execute_buy_trigger(trigger, b, bucket_states, month_expense, fx_rates, config)
+
     return total_covered

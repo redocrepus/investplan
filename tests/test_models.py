@@ -205,14 +205,52 @@ class TestBucketTrigger:
                 threshold_pct=1.5,
             )
 
-    def test_invalid_frequency(self):
+    def test_invalid_period_months(self):
         with pytest.raises(ValueError):
             BucketTrigger(
                 trigger_type=TriggerType.SELL,
                 subtype=SellSubtype.TAKE_PROFIT.value,
                 threshold_pct=1.5,
-                frequency="weekly",
+                period_months=0,
             )
+
+    def test_valid_period_months(self):
+        t = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.TAKE_PROFIT.value,
+            threshold_pct=1.5,
+            period_months=6,
+        )
+        assert t.period_months == 6
+
+
+class TestCashPool:
+    def test_default(self):
+        from models.config import CashPool
+        cp = CashPool()
+        assert cp.initial_amount == 0.0
+        assert cp.refill_target_months == 24.0
+        assert cp.cash_floor_months == 12.0
+
+    def test_valid(self):
+        from models.config import CashPool
+        cp = CashPool(initial_amount=50000, refill_target_months=12, cash_floor_months=6)
+        assert cp.initial_amount == 50000
+
+    def test_negative_initial_amount(self):
+        from models.config import CashPool
+        with pytest.raises(ValueError):
+            CashPool(initial_amount=-1)
+
+    def test_negative_refill_target(self):
+        from models.config import CashPool
+        with pytest.raises(ValueError):
+            CashPool(refill_target_months=-1)
+
+    def test_negative_cash_floor(self):
+        from models.config import CashPool
+        with pytest.raises(ValueError):
+            CashPool(cash_floor_months=-1)
 
 
 class TestSimConfig:

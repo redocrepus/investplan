@@ -59,10 +59,13 @@ class TriggerDialog(QDialog):
             self._target_bucket.addItem(name)
         form.addRow("Target/Source Bucket:", self._target_bucket)
 
-        self._frequency = QComboBox()
-        self._frequency.addItems(["monthly", "yearly"])
-        self._frequency.setToolTip("How often to check this trigger")
-        form.addRow("Frequency:", self._frequency)
+        self._period_months = QSpinBox()
+        self._period_months.setRange(1, 120)
+        self._period_months.setSuffix(" months")
+        self._period_months.setToolTip(
+            "Check this trigger every N months (1 = monthly, 12 = yearly)"
+        )
+        form.addRow("Period:", self._period_months)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -93,7 +96,7 @@ class TriggerDialog(QDialog):
         self._threshold.setValue(t.threshold_pct)
         if t.target_bucket:
             self._target_bucket.setCurrentText(t.target_bucket)
-        self._frequency.setCurrentText(t.frequency)
+        self._period_months.setValue(t.period_months)
 
     def get_trigger(self) -> BucketTrigger:
         target = self._target_bucket.currentText().strip() or None
@@ -102,7 +105,7 @@ class TriggerDialog(QDialog):
             subtype=self._subtype.currentText(),
             threshold_pct=self._threshold.value(),
             target_bucket=target,
-            frequency=self._frequency.currentText(),
+            period_months=self._period_months.value(),
         )
 
 
@@ -264,7 +267,8 @@ class BucketDialog(QDialog):
 
     def _trigger_display(self, t: BucketTrigger) -> str:
         target = f" -> {t.target_bucket}" if t.target_bucket else ""
-        return f"{t.trigger_type.value}/{t.subtype}: {t.threshold_pct}{target} ({t.frequency})"
+        period = f"every {t.period_months}mo" if t.period_months > 1 else "monthly"
+        return f"{t.trigger_type.value}/{t.subtype}: {t.threshold_pct}{target} ({period})"
 
     def _refresh_triggers(self):
         self._trigger_list.clear()

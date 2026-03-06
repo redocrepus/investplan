@@ -8,7 +8,10 @@ from engine.inflation import simulate_monthly_inflation
 from engine.currency import simulate_fx_rates
 from engine.bucket import simulate_bucket_prices
 from engine.expenses import compute_monthly_expenses
-from engine.rebalancer import BucketState, PurchaseLot, execute_rebalance, get_fx_rate, _add_purchase_lot
+from engine.rebalancer import (
+    BucketState, CashPoolState, PurchaseLot, execute_rebalance,
+    get_fx_rate, _add_purchase_lot,
+)
 
 
 def _init_bucket_state(bucket: InvestmentBucket) -> BucketState:
@@ -36,6 +39,7 @@ def run_simulation(config: SimConfig, rng: np.random.Generator) -> pd.DataFrame:
     """Run a single simulation and return results as a DataFrame.
 
     Columns include: year, month, inflation, expenses, total_net_spent,
+    cash_pool_amount, cash_pool_net_spent,
     plus per-bucket columns (price, price_exp, amount, amount_exp,
     sold, sold_exp, bought, fees, tax, net_spent).
     """
@@ -66,6 +70,16 @@ def run_simulation(config: SimConfig, rng: np.random.Generator) -> pd.DataFrame:
         state = _init_bucket_state(bucket)
         bucket_states.append(state)
 
+    # Initialize cash pool
+    cash_pool = CashPoolState(
+        amount=config.cash_pool.initial_amount,
+        refill_target_months=config.cash_pool.refill_target_months,
+        cash_floor_months=config.cash_pool.cash_floor_months,
+    )
+    # Only use cash pool if it has a meaningful configuration
+    # (either has initial cash or has a refill target with buckets to sell from)
+    use_cash_pool = config.cash_pool.initial_amount > 0
+
     # Monthly simulation loop
     rows = []
     for m in range(n_months):
@@ -84,6 +98,7 @@ def run_simulation(config: SimConfig, rng: np.random.Generator) -> pd.DataFrame:
         # Execute rebalancing and expense coverage
         total_covered = execute_rebalance(
             bucket_states, expenses[m], current_fx, config, m,
+            cash_pool=cash_pool if use_cash_pool else None,
         )
 
         # Build row
@@ -92,7 +107,12 @@ def run_simulation(config: SimConfig, rng: np.random.Generator) -> pd.DataFrame:
             "month": month,
             "inflation": inflation_rates[m],
             "expenses": expenses[m],
-            "total_net_spent": sum(b.net_spent for b in bucket_states),
+            "total_net_spent": (
+                cash_pool.net_spent if use_cash_pool
+                else sum(b.net_spent for b in bucket_states)
+            ),
+            "cash_pool_amount": cash_pool.amount,
+            "cash_pool_net_spent": cash_pool.net_spent,
         }
 
         # Per-bucket columns

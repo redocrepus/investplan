@@ -8,6 +8,9 @@ from models.config import SimConfig
 # Columns always shown
 FIXED_COLUMNS = ["year", "month", "inflation", "expenses", "total_net_spent"]
 
+# Cash pool columns (shown when cash pool is active)
+CASH_POOL_COLUMNS = ["cash_pool_amount", "cash_pool_net_spent"]
+
 # Per-bucket columns when expanded
 BUCKET_EXPANDED_COLS = [
     "price", "price_exp", "amount", "amount_exp",
@@ -55,6 +58,12 @@ class SimTableModel(QAbstractTableModel):
 
         if self._config is None:
             return
+
+        # Add cash pool columns if cash pool is active
+        cp = self._config.cash_pool
+        if cp.initial_amount > 0 or cp.refill_target_months > 0:
+            self._columns.extend(CASH_POOL_COLUMNS)
+            self._display_names.extend(["Amount", "Net Spent"])
 
         for bucket in self._config.buckets:
             name = bucket.name

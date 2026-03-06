@@ -1,7 +1,7 @@
 """Tests for the simulator orchestrator."""
 
 import numpy as np
-from models.config import SimConfig
+from models.config import SimConfig, CashPool
 from models.bucket import InvestmentBucket
 from models.expense import ExpensePeriod
 from models.inflation import InflationSettings
@@ -50,6 +50,8 @@ class TestRunSimulation:
         assert "inflation" in df.columns
         assert "expenses" in df.columns
         assert "total_net_spent" in df.columns
+        assert "cash_pool_amount" in df.columns
+        assert "cash_pool_net_spent" in df.columns
 
     def test_bucket_columns_present(self):
         config = _make_config()
@@ -97,3 +99,45 @@ class TestRunSimulation:
         # No expenses => no selling
         assert np.all(df["SP500_sold"].values == 0)
         assert np.all(df["total_net_spent"].values == 0)
+
+    def test_cash_pool_covers_expenses(self):
+        """With cash pool active, expenses should come from cash pool."""
+        config = SimConfig(
+            period_years=1,
+            expenses_currency="USD",
+            capital_gain_tax_pct=0,
+            inflation=InflationSettings(
+                min_pct=0, max_pct=0, avg_pct=0,
+                volatility=InflationVolatility.CONSTANT,
+            ),
+            cash_pool=CashPool(
+                initial_amount=100000,
+                refill_target_months=12,
+                cash_floor_months=0,
+            ),
+            expense_periods=[
+                ExpensePeriod(
+                    start_month=1, start_year=1,
+                    amount_min=500, amount_max=500, amount_avg=500,
+                    volatility=ExpenseVolatility.CONSTANT,
+                ),
+            ],
+            buckets=[
+                InvestmentBucket(
+                    name="SP500", currency="USD",
+                    initial_price=100, initial_amount=50000,
+                    growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0,
+                    volatility=VolatilityProfile.CONSTANT,
+                    buy_sell_fee_pct=0,
+                    target_growth_pct=0,
+                ),
+            ],
+        )
+        rng = np.random.default_rng(42)
+        df = run_simulation(config, rng)
+        # Cash pool should decrease as expenses are drawn
+        assert df["cash_pool_amount"].iloc[0] < 100000
+        assert df["cash_pool_net_spent"].iloc[0] == 500
+        # total_net_spent should match expenses (drawn from cash pool)
+        diff = np.abs(df["expenses"].values - df["total_net_spent"].values)
+        assert np.all(diff < 1.0)

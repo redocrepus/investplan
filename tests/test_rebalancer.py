@@ -2,9 +2,10 @@
 
 import numpy as np
 from engine.rebalancer import (
-    BucketState, PurchaseLot, execute_rebalance, _compute_cost_basis,
-    _add_purchase_lot,
+    BucketState, CashPoolState, PurchaseLot, execute_rebalance,
+    _compute_cost_basis, _add_purchase_lot,
 )
+from models.config import CashPool
 from models.config import SimConfig
 from models.bucket import (
     InvestmentBucket, BucketTrigger, TriggerType, SellSubtype, BuySubtype,
@@ -488,14 +489,14 @@ class TestSaveLoadRoundtrip:
                 subtype=SellSubtype.TAKE_PROFIT.value,
                 threshold_pct=1.5,
                 target_bucket="Cash",
-                frequency="monthly",
+                period_months=1,
             ),
             BucketTrigger(
                 trigger_type=TriggerType.BUY,
                 subtype=BuySubtype.DISCOUNT.value,
                 threshold_pct=10.0,
                 target_bucket="Cash",
-                frequency="yearly",
+                period_months=12,
             ),
         ]
         config = SimConfig(
@@ -525,4 +526,258 @@ class TestSaveLoadRoundtrip:
         assert len(b.triggers) == 2
         assert b.triggers[0].subtype == "take_profit"
         assert b.triggers[1].subtype == "discount"
-        assert b.triggers[1].frequency == "yearly"
+        assert b.triggers[1].period_months == 12
+
+
+class TestCashPoolExpenses:
+    def test_expenses_drawn_from_cash_pool(self):
+        """Expenses should be subtracted from cash pool, not from buckets."""
+        sp500 = _make_state("SP500", price=100, amount=50000)
+        cash_pool = CashPoolState(amount=10000, refill_target_months=0, cash_floor_months=0)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            cash_pool=CashPool(initial_amount=10000, refill_target_months=0, cash_floor_months=0),
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=50000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5),
+            ],
+        )
+
+        execute_rebalance([sp500], 1000, {}, config, 0, cash_pool=cash_pool)
+
+        assert cash_pool.net_spent == 1000
+        assert cash_pool.amount == 9000
+        # Bucket should NOT have sold anything for expenses
+        assert sp500.amount_sold == 0
+
+    def test_shortfall_when_cash_pool_empty(self):
+        """When cash pool runs dry, expenses are uncovered."""
+        sp500 = _make_state("SP500", price=100, amount=50000)
+        cash_pool = CashPoolState(amount=500, refill_target_months=0, cash_floor_months=0)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            cash_pool=CashPool(initial_amount=500, refill_target_months=0, cash_floor_months=0),
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=50000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5),
+            ],
+        )
+
+        total_covered = execute_rebalance([sp500], 1000, {}, config, 0, cash_pool=cash_pool)
+
+        assert cash_pool.net_spent == 500  # only 500 was available
+        assert total_covered == 500
+        assert cash_pool.amount == 0
+
+
+class TestCashPoolRefill:
+    def test_refill_triggers_when_below_target(self):
+        """Cash pool should be refilled when below target months."""
+        sp500 = _make_state("SP500", price=200, amount=50000,
+                            initial_price=100, buy_sell_fee_pct=0)
+        cash_pool = CashPoolState(amount=2000, refill_target_months=12, cash_floor_months=0)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            cash_pool=CashPool(initial_amount=2000, refill_target_months=12, cash_floor_months=0),
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=50000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5,
+                                 buy_sell_fee_pct=0),
+            ],
+        )
+
+        execute_rebalance([sp500], 1000, {}, config, 0, cash_pool=cash_pool)
+
+        # Target = 12 * 1000 = 12000. Started at 1000, drew 1000 expenses -> 0
+        # Should have refilled from SP500
+        assert cash_pool.amount > 0
+        assert sp500.amount_sold > 0
+
+    def test_refill_sells_most_profitable_first(self):
+        """More profitable bucket should be sold first for refill."""
+        # profitable bucket: price doubled (100 -> 200)
+        profitable = _make_state("Profitable", price=200, amount=20000,
+                                 initial_price=100, buy_sell_fee_pct=0,
+                                 spending_priority=1)
+        # unprofitable bucket: price halved (100 -> 50)
+        unprofitable = _make_state("Unprofitable", price=50, amount=20000,
+                                   initial_price=100, buy_sell_fee_pct=0,
+                                   spending_priority=0)
+
+        cash_pool = CashPoolState(amount=500, refill_target_months=6, cash_floor_months=0)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            cash_pool=CashPool(initial_amount=500, refill_target_months=6, cash_floor_months=0),
+            buckets=[
+                InvestmentBucket(name="Profitable", initial_price=100, initial_amount=20000,
+                                 growth_min_pct=0, growth_max_pct=100, growth_avg_pct=10,
+                                 buy_sell_fee_pct=0, spending_priority=1),
+                InvestmentBucket(name="Unprofitable", initial_price=100, initial_amount=20000,
+                                 growth_min_pct=-50, growth_max_pct=10, growth_avg_pct=0,
+                                 buy_sell_fee_pct=0, spending_priority=0),
+            ],
+        )
+
+        execute_rebalance([profitable, unprofitable], 500, {}, config, 0, cash_pool=cash_pool)
+
+        # Profitable bucket should have been sold first
+        assert profitable.amount_sold > 0
+
+    def test_refill_respects_source_cash_floors(self):
+        """Refill should not sell below a bucket's cash floor."""
+        sp500 = _make_state("SP500", price=200, amount=5000,
+                            initial_price=100, buy_sell_fee_pct=0,
+                            cash_floor_months=4)
+
+        cash_pool = CashPoolState(amount=0, refill_target_months=24, cash_floor_months=0)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            cash_pool=CashPool(initial_amount=0, refill_target_months=24, cash_floor_months=0),
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=5000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5,
+                                 buy_sell_fee_pct=0, cash_floor_months=4),
+            ],
+        )
+
+        execute_rebalance([sp500], 1000, {}, config, 0, cash_pool=cash_pool)
+
+        # SP500 cash floor = 4 * 1000 = 4000. Should keep at least 4000.
+        assert sp500.amount >= 3999  # small tolerance
+
+    def test_refill_applies_fees(self):
+        """Refill sells should apply fees."""
+        sp500 = _make_state("SP500", price=200, amount=50000,
+                            initial_price=100, buy_sell_fee_pct=1.0)
+
+        cash_pool = CashPoolState(amount=1, refill_target_months=12, cash_floor_months=0)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=25,
+            cash_pool=CashPool(initial_amount=1, refill_target_months=12, cash_floor_months=0),
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=50000,
+                                 growth_min_pct=0, growth_max_pct=100, growth_avg_pct=10,
+                                 buy_sell_fee_pct=1.0),
+            ],
+        )
+
+        execute_rebalance([sp500], 1000, {}, config, 0, cash_pool=cash_pool)
+
+        assert sp500.fees_paid > 0
+        # Net proceeds to cash pool should be less than gross sell amount due to fees
+        assert cash_pool.amount < sp500.amount_sold
+
+
+class TestTriggerPeriodMonths:
+    def test_monthly_trigger_fires_every_month(self):
+        """period_months=1 should fire every month."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.TAKE_PROFIT.value,
+            threshold_pct=1.0,
+            target_bucket="Cash",
+            period_months=1,
+        )
+        sp500 = _make_state("SP500", price=200, amount=10000,
+                            initial_price=100, target_growth_pct=10,
+                            triggers=[trigger])
+        cash = _make_state("Cash", price=1, amount=50000)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=10000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="Cash", initial_price=1, initial_amount=50000,
+                                 growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0),
+            ],
+        )
+
+        # Should fire at month 0, 1, 5, etc.
+        for month_idx in [0, 1, 5]:
+            sp500.amount = 10000
+            sp500.price = 200
+            execute_rebalance([sp500, cash], 0, {}, config, month_idx)
+            assert sp500.amount_sold > 0, f"Trigger should fire at month {month_idx}"
+
+    def test_quarterly_trigger_fires_correctly(self):
+        """period_months=3 should fire at months 0, 3, 6, etc."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.TAKE_PROFIT.value,
+            threshold_pct=1.0,
+            target_bucket="Cash",
+            period_months=3,
+        )
+        sp500 = _make_state("SP500", price=200, amount=10000,
+                            initial_price=100, target_growth_pct=10,
+                            triggers=[trigger])
+        cash = _make_state("Cash", price=1, amount=50000)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=10000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="Cash", initial_price=1, initial_amount=50000,
+                                 growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0),
+            ],
+        )
+
+        # Should fire at month 0, 3, 6
+        for month_idx in [0, 3, 6]:
+            sp500.amount = 10000
+            sp500.price = 200
+            execute_rebalance([sp500, cash], 0, {}, config, month_idx)
+            assert sp500.amount_sold > 0, f"Trigger should fire at month {month_idx}"
+
+        # Should NOT fire at month 1, 2, 4, 5
+        for month_idx in [1, 2, 4, 5]:
+            sp500.amount = 10000
+            sp500.price = 200
+            execute_rebalance([sp500, cash], 0, {}, config, month_idx)
+            assert sp500.amount_sold == 0, f"Trigger should NOT fire at month {month_idx}"
+
+    def test_yearly_trigger_fires_every_12_months(self):
+        """period_months=12 should fire at months 0, 12, 24, etc."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.TAKE_PROFIT.value,
+            threshold_pct=1.0,
+            target_bucket="Cash",
+            period_months=12,
+        )
+        sp500 = _make_state("SP500", price=200, amount=10000,
+                            initial_price=100, target_growth_pct=10,
+                            triggers=[trigger])
+        cash = _make_state("Cash", price=1, amount=50000)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=10000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="Cash", initial_price=1, initial_amount=50000,
+                                 growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0),
+            ],
+        )
+
+        # Should fire at month 0, 12, 24
+        for month_idx in [0, 12, 24]:
+            sp500.amount = 10000
+            sp500.price = 200
+            execute_rebalance([sp500, cash], 0, {}, config, month_idx)
+            assert sp500.amount_sold > 0, f"Trigger should fire at month {month_idx}"
+
+        # Should NOT fire at months 1-11
+        for month_idx in [1, 6, 11]:
+            sp500.amount = 10000
+            sp500.price = 200
+            execute_rebalance([sp500, cash], 0, {}, config, month_idx)
+            assert sp500.amount_sold == 0, f"Trigger should NOT fire at month {month_idx}"
