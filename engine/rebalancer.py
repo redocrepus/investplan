@@ -167,12 +167,14 @@ def _portfolio_total_expenses_currency(
     bucket_states: list[BucketState],
     fx_rates: dict[str, float],
     expenses_currency: str,
+    cash_pool_amount: float = 0.0,
 ) -> float:
-    """Compute total portfolio value in expenses currency."""
-    return sum(
+    """Compute total portfolio value in expenses currency (including cash pool)."""
+    buckets_total = sum(
         _bucket_value_in_expenses_currency(b, get_fx_rate(b.currency, expenses_currency, fx_rates))
         for b in bucket_states
     )
+    return buckets_total + cash_pool_amount
 
 
 def _get_share_floor(bucket_state: BucketState) -> float | None:
@@ -198,6 +200,7 @@ def _available_to_sell(
     bucket_states: list[BucketState],
     fx_rates: dict[str, float],
     expenses_currency: str,
+    cash_pool_amount: float = 0.0,
 ) -> float:
     """Compute how much (in expenses currency) can be sold from a bucket respecting all floors.
 
@@ -213,7 +216,7 @@ def _available_to_sell(
     share_floor_pct = _get_share_floor(bucket)
     share_floor = 0.0
     if share_floor_pct is not None:
-        portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency)
+        portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency, cash_pool_amount)
         share_floor = portfolio_total * share_floor_pct / 100.0
     effective_floor = max(cash_floor, share_floor)
     return max(0.0, bucket_value - effective_floor)
@@ -270,6 +273,7 @@ def _execute_sell_trigger(
     month_expense: float,
     fx_rates: dict[str, float],
     config: SimConfig,
+    cash_pool_amount: float = 0.0,
 ) -> None:
     """Execute a single sell trigger if conditions are met."""
     expenses_currency = config.expenses_currency
@@ -303,7 +307,7 @@ def _execute_sell_trigger(
 
     elif trigger.subtype == SellSubtype.SHARE_EXCEEDS.value:
         # Sell if bucket's share of portfolio > threshold%
-        portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency)
+        portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency, cash_pool_amount)
         if portfolio_total <= 0:
             return
         seller_fx = get_fx_rate(seller.currency, expenses_currency, fx_rates)
@@ -360,7 +364,7 @@ def _execute_sell_trigger(
         # Enforce target's share ceiling (implicit from share_exceeds trigger)
         target_ceiling_pct = _get_share_ceiling(target)
         if target_ceiling_pct is not None:
-            portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency)
+            portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency, cash_pool_amount)
             target_value = target.amount * target_fx
             ceiling_value = portfolio_total * target_ceiling_pct / 100.0
             headroom = max(0.0, ceiling_value - target_value)
@@ -384,6 +388,7 @@ def _execute_buy_trigger(
     month_expense: float,
     fx_rates: dict[str, float],
     config: SimConfig,
+    cash_pool_amount: float = 0.0,
 ) -> None:
     """Execute a single buy trigger if conditions are met.
 
@@ -412,7 +417,7 @@ def _execute_buy_trigger(
 
     elif trigger.subtype == BuySubtype.SHARE_BELOW.value:
         # Buy if bucket's share of portfolio < threshold%
-        portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency)
+        portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency, cash_pool_amount)
         if portfolio_total <= 0:
             return
         buyer_fx = get_fx_rate(buyer.currency, expenses_currency, fx_rates)
@@ -440,7 +445,7 @@ def _execute_buy_trigger(
     buyer_fx = get_fx_rate(buyer.currency, expenses_currency, fx_rates)
     buyer_ceiling_pct = _get_share_ceiling(buyer)
     if buyer_ceiling_pct is not None:
-        portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency)
+        portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency, cash_pool_amount)
         buyer_value = buyer.amount * buyer_fx
         ceiling_value = portfolio_total * buyer_ceiling_pct / 100.0
         headroom = max(0.0, ceiling_value - buyer_value)
@@ -458,7 +463,7 @@ def _execute_buy_trigger(
         s_fx = get_fx_rate(s.currency, expenses_currency, fx_rates)
         conv_fee_pct = get_conversion_fee_pct(s.currency, expenses_currency, config)
         profit = _bucket_profitability(s, s_fx, s.buy_sell_fee_pct, conv_fee_pct, expenses_currency)
-        avail = _available_to_sell(s, month_expense, s_fx, bucket_states, fx_rates, expenses_currency)
+        avail = _available_to_sell(s, month_expense, s_fx, bucket_states, fx_rates, expenses_currency, cash_pool_amount)
         source_info.append((s, profit, s_fx, avail))
 
     # Sort: profitable descending first, then unprofitable in original list order
@@ -592,6 +597,7 @@ def _refill_cash_pool(
 
         available_expenses = _available_to_sell(
             b, month_expense, fx, bucket_states, fx_rates, expenses_currency,
+            cash_pool.amount,
         )
 
         if available_expenses <= 0:
@@ -759,6 +765,8 @@ def execute_rebalance(
     if cash_pool is not None:
         cash_pool.net_spent = 0.0
 
+    cp_amount = cash_pool.amount if cash_pool is not None else 0.0
+
     # --- Phase 1: Execute sell triggers ---
     for b in bucket_states:
         for trigger in b.triggers:
@@ -766,7 +774,7 @@ def execute_rebalance(
                 continue
             if trigger.period_months > 1 and month_idx % trigger.period_months != 0:
                 continue
-            _execute_sell_trigger(trigger, b, bucket_states, month_expense, fx_rates, config)
+            _execute_sell_trigger(trigger, b, bucket_states, month_expense, fx_rates, config, cp_amount)
 
     # --- Phase 2: Cover expenses ---
     if cash_pool is not None:
@@ -804,6 +812,7 @@ def execute_rebalance(
                 continue
             if trigger.period_months > 1 and month_idx % trigger.period_months != 0:
                 continue
-            _execute_buy_trigger(trigger, b, bucket_states, month_expense, fx_rates, config)
+            cp_amount = cash_pool.amount if cash_pool is not None else 0.0
+            _execute_buy_trigger(trigger, b, bucket_states, month_expense, fx_rates, config, cp_amount)
 
     return total_covered
