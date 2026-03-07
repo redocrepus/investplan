@@ -36,7 +36,7 @@ def simulate_bucket_prices(
     for i in range(n_months):
         log_return = rng.normal(monthly_drift, spec.monthly_sigma)
         # Clamp the log return
-        log_return = np.clip(log_return, min_monthly_log - 0.01, max_monthly_log + 0.01)
+        log_return = np.clip(log_return, min_monthly_log, max_monthly_log)
         current *= np.exp(log_return)
         # Price can't go below a small floor
         current = max(current, 0.001)

@@ -228,8 +228,8 @@ Critical fixes identified during financial review. Tests must be strengthened to
 - [x] Fix profitability ordering to use actual cost basis (`avg_cost`) instead of `initial_price` in `_bucket_profitability()`.
 - [x] Fix sell amount calculation to account for fees/tax shrinkage — added `_estimate_net_yield()` to gross up sell amounts so net proceeds cover intended targets. Applied in expense coverage, cash pool refill, and buy trigger source sells.
 - [x] Include cash pool in portfolio total for share% calculations — `_portfolio_total_expenses_currency` now accepts `cash_pool_amount` parameter, threaded through sell/buy triggers and available-to-sell checks.
-- [ ] Fix yearly trigger month logic in `engine/rebalancer.py` — `month_idx % 12 != 0` fires in January; decide on correct month and document
-- [ ] Remove log-return clamping slack in `engine/bucket.py:39` — the `±0.01` slack on log-return bounds allows monthly returns to exceed the user's configured min/max growth range
+- [x] Fix yearly trigger month logic — documented that month_idx=0 is the first month, triggers fire at 0, 12, 24, etc. Behavior is correct, just needed documentation.
+- [x] Remove log-return clamping slack in `engine/bucket.py` — removed `±0.01` that allowed exceeding configured min/max growth range.
 - [ ] Add trigger target bucket reference validation in `gui/main_window.py` — reject configs where `trigger.target_bucket` doesn't exist in `config.buckets`
 - [ ] Add currency mismatch validation — reject buckets referencing currencies without FX settings
 - [ ] Prevent self-referential triggers (bucket targeting itself)

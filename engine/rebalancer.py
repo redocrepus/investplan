@@ -768,6 +768,8 @@ def execute_rebalance(
     cp_amount = cash_pool.amount if cash_pool is not None else 0.0
 
     # --- Phase 1: Execute sell triggers ---
+    # Triggers fire at month_idx 0 (first month), then every period_months.
+    # E.g. period_months=12 fires at months 0, 12, 24, ...
     for b in bucket_states:
         for trigger in b.triggers:
             if trigger.trigger_type != TriggerType.SELL:
