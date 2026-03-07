@@ -109,7 +109,8 @@ def run_simulation(config: SimConfig, rng: np.random.Generator) -> pd.DataFrame:
             "inflation": inflation_rates[m],
             "expenses": expenses[m],
             "total_net_spent": (
-                cash_pool.net_spent if use_cash_pool
+                (cash_pool.net_spent + sum(b.net_spent for b in bucket_states))
+                if use_cash_pool
                 else sum(b.net_spent for b in bucket_states)
             ),
             "cash_pool_amount": cash_pool.amount,
