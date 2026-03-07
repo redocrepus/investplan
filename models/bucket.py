@@ -38,7 +38,7 @@ class BucketTrigger(BaseModel):
     """
     trigger_type: TriggerType
     subtype: str  # SellSubtype or BuySubtype value
-    threshold_pct: float  # the X value (ratio for take_profit, percent for others)
+    threshold_pct: float  # percentage: take_profit=100 means "fire at 100% of target growth"
     target_bucket: Optional[str] = None      # sell triggers: where to invest proceeds
     source_buckets: list[str] = []            # buy triggers: ordered list of funding sources
     period_months: int = 1  # check every N months (1=monthly, 12=yearly)

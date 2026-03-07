@@ -40,7 +40,7 @@ class TestSellTakeProfitTrigger:
         trigger = BucketTrigger(
             trigger_type=TriggerType.SELL,
             subtype=SellSubtype.TAKE_PROFIT.value,
-            threshold_pct=1.5,
+            threshold_pct=150,  # fire when growth ratio >= 150% of target
             target_bucket="Cash",
         )
         sp500 = _make_state("SP500", price=200, amount=10000,
@@ -61,17 +61,51 @@ class TestSellTakeProfitTrigger:
 
         execute_rebalance([sp500, cash], 0, {}, config, 0)
 
-        # SP500 should have sold excess (price=200 vs target=110, excess fraction = 90/200 = 45%)
+        # SP500 growth=100%, target=10%, ratio=1000% > 150%
+        # Excess above target: price=200 vs target_price=110, excess=90/200=45% of amount
         assert sp500.amount_sold > 0
+        assert cash.amount_bought > 0
+
+    def test_triggers_with_exact_sell_amount(self):
+        """Verify exact sell amount: excess above cost-basis target price."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.TAKE_PROFIT.value,
+            threshold_pct=100,  # fire when growth ratio >= 100% of target
+            target_bucket="Cash",
+        )
+        # Price doubled from 100 to 200, target_growth=10%
+        sp500 = _make_state("SP500", price=200, amount=10000,
+                            initial_price=100, target_growth_pct=10,
+                            triggers=[trigger])
+        cash = _make_state("Cash", price=1, amount=50000,
+                           initial_price=1, target_growth_pct=0)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=10000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="Cash", initial_price=1, initial_amount=50000,
+                                 growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0),
+            ],
+        )
+
+        execute_rebalance([sp500, cash], 0, {}, config, 0)
+
+        # target_price = 100 * 1.10 = 110, excess = 200-110 = 90/200 = 45%
+        # sell_amount = 10000 * 0.45 = 4500
+        assert abs(sp500.amount_sold - 4500) < 1.0
         assert cash.amount_bought > 0
 
     def test_no_trigger_when_below(self):
         trigger = BucketTrigger(
             trigger_type=TriggerType.SELL,
             subtype=SellSubtype.TAKE_PROFIT.value,
-            threshold_pct=1.5,
+            threshold_pct=150,  # need 150% of target growth
             target_bucket="Cash",
         )
+        # 5% growth, target 10%, ratio = 50% < 150%
         sp500 = _make_state("SP500", price=105, amount=10000,
                             initial_price=100, target_growth_pct=10,
                             triggers=[trigger])
@@ -264,7 +298,7 @@ class TestRunawayGuard:
         trigger = BucketTrigger(
             trigger_type=TriggerType.SELL,
             subtype=SellSubtype.TAKE_PROFIT.value,
-            threshold_pct=0.1,  # Very low to ensure it would fire
+            threshold_pct=10,  # Very low to ensure it would fire
             target_bucket="Cash",
         )
         sp500 = _make_state("SP500", price=200, amount=500,
@@ -330,7 +364,7 @@ class TestMultipleTriggers:
             BucketTrigger(
                 trigger_type=TriggerType.SELL,
                 subtype=SellSubtype.TAKE_PROFIT.value,
-                threshold_pct=1.0,
+                threshold_pct=100,
                 target_bucket="Cash",
             ),
             BucketTrigger(
@@ -511,7 +545,7 @@ class TestCrossCurrencyTrigger:
         trigger = BucketTrigger(
             trigger_type=TriggerType.SELL,
             subtype=SellSubtype.TAKE_PROFIT.value,
-            threshold_pct=1.0,
+            threshold_pct=100,
             target_bucket="Cash",
         )
         # EUR bucket doubled in price
@@ -556,7 +590,7 @@ class TestSaveLoadRoundtrip:
             BucketTrigger(
                 trigger_type=TriggerType.SELL,
                 subtype=SellSubtype.TAKE_PROFIT.value,
-                threshold_pct=1.5,
+                threshold_pct=150,
                 target_bucket="Cash",
                 period_months=1,
             ),
@@ -750,7 +784,7 @@ class TestTriggerPeriodMonths:
         trigger = BucketTrigger(
             trigger_type=TriggerType.SELL,
             subtype=SellSubtype.TAKE_PROFIT.value,
-            threshold_pct=1.0,
+            threshold_pct=100,
             target_bucket="Cash",
             period_months=1,
         )
@@ -781,7 +815,7 @@ class TestTriggerPeriodMonths:
         trigger = BucketTrigger(
             trigger_type=TriggerType.SELL,
             subtype=SellSubtype.TAKE_PROFIT.value,
-            threshold_pct=1.0,
+            threshold_pct=100,
             target_bucket="Cash",
             period_months=3,
         )
@@ -819,7 +853,7 @@ class TestTriggerPeriodMonths:
         trigger = BucketTrigger(
             trigger_type=TriggerType.SELL,
             subtype=SellSubtype.TAKE_PROFIT.value,
-            threshold_pct=1.0,
+            threshold_pct=100,
             target_bucket="Cash",
             period_months=12,
         )
@@ -1109,7 +1143,7 @@ class TestImplicitShareFloors:
         sell_trigger = BucketTrigger(
             trigger_type=TriggerType.SELL,
             subtype=SellSubtype.TAKE_PROFIT.value,
-            threshold_pct=1.0,
+            threshold_pct=100,
             target_bucket="Target",
         )
         # Target has share_exceeds 60% trigger (ceiling)

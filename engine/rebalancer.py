@@ -259,15 +259,17 @@ def _execute_sell_trigger(
     sell_amount = 0.0
 
     if trigger.subtype == SellSubtype.TAKE_PROFIT.value:
-        # Sell if actual_growth% / target_growth% >= threshold
-        if seller.target_growth_pct == 0 or seller.initial_price <= 0:
+        # Sell if actual_growth% / target_growth% * 100 >= threshold_pct
+        # Use cost basis per unit for growth calculation (per requirements)
+        cost_per_unit = seller.avg_cost if seller.avg_cost > 0 else seller.initial_price
+        if seller.target_growth_pct == 0 or cost_per_unit <= 0:
             return
-        actual_growth = (seller.price - seller.initial_price) / seller.initial_price * 100.0
-        ratio = actual_growth / seller.target_growth_pct
-        if ratio < trigger.threshold_pct:
+        actual_growth = (seller.price - cost_per_unit) / cost_per_unit * 100.0
+        ratio_pct = actual_growth / seller.target_growth_pct * 100.0
+        if ratio_pct < trigger.threshold_pct:
             return
         # Sell the excess above target
-        target_price = seller.initial_price * (1 + seller.target_growth_pct / 100.0)
+        target_price = cost_per_unit * (1 + seller.target_growth_pct / 100.0)
         excess_per_unit = seller.price - target_price
         if excess_per_unit <= 0:
             return
