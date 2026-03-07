@@ -652,6 +652,48 @@ def _cover_expenses_from_buckets(
 
         remaining_expense -= net_in_expenses
 
+    # Fallback: if all buckets hit their cash floors, sell in reverse spending
+    # priority order (lowest priority first), violating cash floors. This
+    # preserves the most stable assets (highest priority) during distress.
+    if remaining_expense > 0:
+        reverse_order = sorted(bucket_states, key=lambda b: b.spending_priority, reverse=True)
+        for b in reverse_order:
+            if remaining_expense <= 0:
+                break
+
+            fx = get_fx_rate(b.currency, expenses_currency, fx_rates)
+            if fx <= 0:
+                continue
+
+            bucket_value_expenses = b.amount * fx
+            if bucket_value_expenses <= 0:
+                continue
+
+            sell_expenses = min(remaining_expense, bucket_value_expenses)
+            sell_bucket_currency = sell_expenses / fx
+
+            net_proceeds, fee = compute_sell(sell_bucket_currency, b.buy_sell_fee_pct)
+
+            cost_basis = _compute_cost_basis(b, sell_bucket_currency)
+            gain = net_proceeds - cost_basis
+            tax = max(0, gain * capital_gain_tax_pct / 100.0)
+            after_tax = net_proceeds - tax
+
+            conv_fee_pct = get_conversion_fee_pct(b.currency, expenses_currency, config)
+            net_in_expenses = after_tax * fx
+            if b.currency != expenses_currency:
+                fx_fee = net_in_expenses * conv_fee_pct / 100.0
+                net_in_expenses -= fx_fee
+                b.fees_paid += fx_fee
+
+            b.amount -= sell_bucket_currency
+            b.amount_sold += sell_bucket_currency
+            b.fees_paid += fee * fx
+            b.tax_paid += tax * fx
+            b.net_spent += net_in_expenses
+
+            remaining_expense -= net_in_expenses
+
     return remaining_expense
 
 

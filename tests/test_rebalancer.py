@@ -356,6 +356,43 @@ class TestCashFloorCascade:
         # Primary should keep at least 3000 (3 months * 1000)
         assert states[0].amount >= 3000 - 1  # small tolerance
 
+    def test_reverse_priority_fallback_when_all_at_floor(self):
+        """When all buckets hit cash floor, sell in reverse priority (lowest first)."""
+        config = SimConfig(
+            expenses_currency="USD",
+            capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(
+                    name="HighPri", currency="USD",
+                    initial_price=1, initial_amount=3000,
+                    growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0,
+                    spending_priority=0, cash_floor_months=3,  # floor=3000
+                ),
+                InvestmentBucket(
+                    name="LowPri", currency="USD",
+                    initial_price=1, initial_amount=3000,
+                    growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0,
+                    spending_priority=1, cash_floor_months=3,  # floor=3000
+                ),
+            ],
+        )
+
+        states = [
+            _make_state("HighPri", price=1, amount=3000, initial_price=1,
+                        spending_priority=0, cash_floor_months=3),
+            _make_state("LowPri", price=1, amount=3000, initial_price=1,
+                        spending_priority=1, cash_floor_months=3),
+        ]
+
+        # All at floor, but expenses=1000 must be covered
+        total_covered = execute_rebalance(states, 1000, {}, config, 0)
+
+        assert total_covered == 1000
+        # LowPri (reverse priority) should be sold first to cover expenses
+        assert states[1].amount_sold > 0
+        # HighPri should be preserved (or sold less)
+        assert states[1].amount_sold >= states[0].amount_sold
+
 
 class TestMultipleTriggers:
     def test_multiple_sell_triggers(self):
