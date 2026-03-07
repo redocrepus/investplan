@@ -13,3 +13,7 @@ Every code change must include updates to all relevant documentation:
 - **GUI tooltips** — Keep all input field tooltips accurate and consistent with documentation
 
 No change is complete until documentation is updated.
+
+## Git Commit Policy
+
+When committing multiple changes, divide into separate commits **by feature/fix item**, not by area (implementation/tests/docs). Each commit should contain the full vertical slice for one logical change: code + tests + docs together. This keeps each commit self-contained and bisectable.
