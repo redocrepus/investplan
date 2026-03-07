@@ -28,11 +28,19 @@ class CostBasisMethod(str, Enum):
 
 
 class BucketTrigger(BaseModel):
-    """A single trigger (sell or buy) attached to an investment bucket."""
+    """A single trigger (sell or buy) attached to an investment bucket.
+
+    Sell triggers use ``target_bucket`` to specify where proceeds are invested.
+    Buy triggers use ``source_buckets`` (ordered list) to specify funding sources.
+    For backward compatibility, if a buy trigger has ``target_bucket`` set but
+    ``source_buckets`` is empty, ``source_buckets`` is auto-populated from
+    ``target_bucket``.
+    """
     trigger_type: TriggerType
     subtype: str  # SellSubtype or BuySubtype value
     threshold_pct: float  # the X value (ratio for take_profit, percent for others)
-    target_bucket: Optional[str] = None  # target bucket (sell) or source bucket (buy)
+    target_bucket: Optional[str] = None      # sell triggers: where to invest proceeds
+    source_buckets: list[str] = []            # buy triggers: ordered list of funding sources
     period_months: int = 1  # check every N months (1=monthly, 12=yearly)
 
     @model_validator(mode="after")
@@ -45,6 +53,11 @@ class BucketTrigger(BaseModel):
         elif self.trigger_type == TriggerType.BUY:
             if self.subtype not in (BuySubtype.DISCOUNT.value, BuySubtype.SHARE_BELOW.value):
                 raise ValueError(f"Invalid buy subtype: {self.subtype}")
+            # Backward compat: migrate target_bucket to source_buckets
+            if not self.source_buckets and self.target_bucket:
+                self.source_buckets = [self.target_bucket]
+            if not self.source_buckets:
+                raise ValueError("Buy triggers must have at least one source bucket")
         return self
 
 

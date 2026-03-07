@@ -533,11 +533,11 @@ class TestCashPoolExpenses:
     def test_expenses_drawn_from_cash_pool(self):
         """Expenses should be subtracted from cash pool, not from buckets."""
         sp500 = _make_state("SP500", price=100, amount=50000)
-        cash_pool = CashPoolState(amount=10000, refill_target_months=0, cash_floor_months=0)
+        cash_pool = CashPoolState(amount=10000, refill_trigger_months=0, refill_target_months=0, cash_floor_months=0)
 
         config = SimConfig(
             expenses_currency="USD", capital_gain_tax_pct=0,
-            cash_pool=CashPool(initial_amount=10000, refill_target_months=0, cash_floor_months=0),
+            cash_pool=CashPool(initial_amount=10000, refill_trigger_months=0, refill_target_months=0, cash_floor_months=0),
             buckets=[
                 InvestmentBucket(name="SP500", initial_price=100, initial_amount=50000,
                                  growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5),
@@ -551,14 +551,14 @@ class TestCashPoolExpenses:
         # Bucket should NOT have sold anything for expenses
         assert sp500.amount_sold == 0
 
-    def test_shortfall_when_cash_pool_empty(self):
-        """When cash pool runs dry, expenses are uncovered."""
+    def test_fallthrough_when_cash_pool_insufficient(self):
+        """When cash pool can't cover expenses, fall through to bucket selling."""
         sp500 = _make_state("SP500", price=100, amount=50000)
-        cash_pool = CashPoolState(amount=500, refill_target_months=0, cash_floor_months=0)
+        cash_pool = CashPoolState(amount=500, refill_trigger_months=0, refill_target_months=0, cash_floor_months=0)
 
         config = SimConfig(
             expenses_currency="USD", capital_gain_tax_pct=0,
-            cash_pool=CashPool(initial_amount=500, refill_target_months=0, cash_floor_months=0),
+            cash_pool=CashPool(initial_amount=500, refill_trigger_months=0, refill_target_months=0, cash_floor_months=0),
             buckets=[
                 InvestmentBucket(name="SP500", initial_price=100, initial_amount=50000,
                                  growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5),
@@ -567,9 +567,10 @@ class TestCashPoolExpenses:
 
         total_covered = execute_rebalance([sp500], 1000, {}, config, 0, cash_pool=cash_pool)
 
-        assert cash_pool.net_spent == 500  # only 500 was available
-        assert total_covered == 500
+        assert cash_pool.net_spent == 500  # 500 drawn from cash pool
         assert cash_pool.amount == 0
+        assert sp500.amount_sold > 0  # remainder covered by selling bucket
+        assert total_covered == 1000  # fully covered
 
 
 class TestCashPoolRefill:
@@ -577,11 +578,11 @@ class TestCashPoolRefill:
         """Cash pool should be refilled when below target months."""
         sp500 = _make_state("SP500", price=200, amount=50000,
                             initial_price=100, buy_sell_fee_pct=0)
-        cash_pool = CashPoolState(amount=2000, refill_target_months=12, cash_floor_months=0)
+        cash_pool = CashPoolState(amount=2000, refill_trigger_months=6, refill_target_months=12, cash_floor_months=0)
 
         config = SimConfig(
             expenses_currency="USD", capital_gain_tax_pct=0,
-            cash_pool=CashPool(initial_amount=2000, refill_target_months=12, cash_floor_months=0),
+            cash_pool=CashPool(initial_amount=2000, refill_trigger_months=6, refill_target_months=12, cash_floor_months=0),
             buckets=[
                 InvestmentBucket(name="SP500", initial_price=100, initial_amount=50000,
                                  growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5,
@@ -607,11 +608,11 @@ class TestCashPoolRefill:
                                    initial_price=100, buy_sell_fee_pct=0,
                                    spending_priority=0)
 
-        cash_pool = CashPoolState(amount=500, refill_target_months=6, cash_floor_months=0)
+        cash_pool = CashPoolState(amount=500, refill_trigger_months=3, refill_target_months=6, cash_floor_months=0)
 
         config = SimConfig(
             expenses_currency="USD", capital_gain_tax_pct=0,
-            cash_pool=CashPool(initial_amount=500, refill_target_months=6, cash_floor_months=0),
+            cash_pool=CashPool(initial_amount=500, refill_trigger_months=3, refill_target_months=6, cash_floor_months=0),
             buckets=[
                 InvestmentBucket(name="Profitable", initial_price=100, initial_amount=20000,
                                  growth_min_pct=0, growth_max_pct=100, growth_avg_pct=10,
@@ -633,11 +634,11 @@ class TestCashPoolRefill:
                             initial_price=100, buy_sell_fee_pct=0,
                             cash_floor_months=4)
 
-        cash_pool = CashPoolState(amount=0, refill_target_months=24, cash_floor_months=0)
+        cash_pool = CashPoolState(amount=0, refill_trigger_months=12, refill_target_months=24, cash_floor_months=0)
 
         config = SimConfig(
             expenses_currency="USD", capital_gain_tax_pct=0,
-            cash_pool=CashPool(initial_amount=0, refill_target_months=24, cash_floor_months=0),
+            cash_pool=CashPool(initial_amount=0, refill_trigger_months=12, refill_target_months=24, cash_floor_months=0),
             buckets=[
                 InvestmentBucket(name="SP500", initial_price=100, initial_amount=5000,
                                  growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5,
@@ -655,11 +656,11 @@ class TestCashPoolRefill:
         sp500 = _make_state("SP500", price=200, amount=50000,
                             initial_price=100, buy_sell_fee_pct=1.0)
 
-        cash_pool = CashPoolState(amount=1, refill_target_months=12, cash_floor_months=0)
+        cash_pool = CashPoolState(amount=1, refill_trigger_months=6, refill_target_months=12, cash_floor_months=0)
 
         config = SimConfig(
             expenses_currency="USD", capital_gain_tax_pct=25,
-            cash_pool=CashPool(initial_amount=1, refill_target_months=12, cash_floor_months=0),
+            cash_pool=CashPool(initial_amount=1, refill_trigger_months=6, refill_target_months=12, cash_floor_months=0),
             buckets=[
                 InvestmentBucket(name="SP500", initial_price=100, initial_amount=50000,
                                  growth_min_pct=0, growth_max_pct=100, growth_avg_pct=10,
@@ -781,3 +782,352 @@ class TestTriggerPeriodMonths:
             sp500.price = 200
             execute_rebalance([sp500, cash], 0, {}, config, month_idx)
             assert sp500.amount_sold == 0, f"Trigger should NOT fire at month {month_idx}"
+
+
+class TestMultiSourceBuyTrigger:
+    def test_sells_from_most_profitable_first(self):
+        """Buy trigger with 3 source buckets should sell from most profitable first."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=30.0,
+            source_buckets=["Source1", "Source2", "Source3"],
+        )
+        # Buyer: 5% of portfolio, should buy up to 30%
+        buyer = _make_state("Buyer", price=100, amount=5000, triggers=[trigger])
+        # Source1: least profitable (price = initial)
+        src1 = _make_state("Source1", price=100, amount=30000, initial_price=100)
+        # Source2: most profitable (price doubled)
+        src2 = _make_state("Source2", price=200, amount=30000, initial_price=100)
+        # Source3: moderately profitable
+        src3 = _make_state("Source3", price=150, amount=30000, initial_price=100)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="Buyer", initial_price=100, initial_amount=5000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="Source1", initial_price=100, initial_amount=30000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="Source2", initial_price=100, initial_amount=30000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="Source3", initial_price=100, initial_amount=30000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+            ],
+        )
+
+        execute_rebalance([buyer, src1, src2, src3], 0, {}, config, 0)
+
+        assert buyer.amount_bought > 0
+        # Source2 (most profitable) should have sold the most
+        assert src2.amount_sold > 0
+        # Source2 should sell more than Source1 (least profitable is sold last)
+        assert src2.amount_sold >= src1.amount_sold
+
+    def test_respects_cash_floors_on_each_source(self):
+        """Each source's cash floor should be respected."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=50.0,
+            source_buckets=["Source1", "Source2"],
+        )
+        buyer = _make_state("Buyer", price=100, amount=5000, triggers=[trigger])
+        # Source1: 10000 with 9-month floor at 1000/month = 9000 floor -> only 1000 available
+        src1 = _make_state("Source1", price=100, amount=10000, cash_floor_months=9)
+        # Source2: 20000 with no floor
+        src2 = _make_state("Source2", price=100, amount=20000, cash_floor_months=0)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="Buyer", initial_price=100, initial_amount=5000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="Source1", initial_price=100, initial_amount=10000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+                                 cash_floor_months=9),
+                InvestmentBucket(name="Source2", initial_price=100, initial_amount=20000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+            ],
+        )
+
+        execute_rebalance([buyer, src1, src2], 1000, {}, config, 0)
+
+        # Source1 should keep at least 9000 (9 * 1000)
+        assert src1.amount >= 8999
+
+    def test_falls_back_to_priority_order_when_all_losing(self):
+        """When all sources are losing, sell in user-defined priority order."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=20.0,
+            source_buckets=["PriorityFirst", "PrioritySecond"],
+        )
+        buyer = _make_state("Buyer", price=100, amount=1000, triggers=[trigger])
+        # Both sources are losing (price < initial)
+        src1 = _make_state("PriorityFirst", price=80, amount=50000, initial_price=100)
+        src2 = _make_state("PrioritySecond", price=50, amount=50000, initial_price=100)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="Buyer", initial_price=100, initial_amount=1000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="PriorityFirst", initial_price=100, initial_amount=50000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="PrioritySecond", initial_price=100, initial_amount=50000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+            ],
+        )
+
+        execute_rebalance([buyer, src1, src2], 0, {}, config, 0)
+
+        assert buyer.amount_bought > 0
+        # PriorityFirst should sell before PrioritySecond (list order preserved)
+        assert src1.amount_sold > 0
+
+    def test_discount_sells_all_available_from_sources(self):
+        """Discount trigger should sell all available from sources down to floors."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.DISCOUNT.value,
+            threshold_pct=5.0,
+            source_buckets=["Source"],
+        )
+        # Discounted: price=80, target=110, discount=37.5% > 5%
+        buyer = _make_state("Buyer", price=80, amount=5000,
+                            initial_price=100, target_growth_pct=10, triggers=[trigger])
+        source = _make_state("Source", price=100, amount=20000, cash_floor_months=5)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="Buyer", initial_price=100, initial_amount=5000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="Source", initial_price=100, initial_amount=20000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+                                 cash_floor_months=5),
+            ],
+        )
+
+        execute_rebalance([buyer, source], 1000, {}, config, 0)
+
+        assert buyer.amount_bought > 0
+        # Source should be sold down to floor (5 * 1000 = 5000)
+        assert source.amount >= 4999  # small tolerance
+        assert source.amount_sold > 0
+
+
+class TestImplicitShareFloors:
+    def test_source_not_sold_below_share_floor(self):
+        """Source with share_below 20% trigger should not be sold below 20% portfolio share."""
+        # Source has a share_below 20% trigger (making 20% its implicit floor)
+        source_trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=20.0,
+            source_buckets=["Other"],
+        )
+        buy_trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=50.0,
+            source_buckets=["Source"],
+        )
+        # Buyer: small amount, wants to reach 50%
+        buyer = _make_state("Buyer", price=100, amount=5000, triggers=[buy_trigger])
+        # Source: 25% of portfolio, has 20% floor
+        source = _make_state("Source", price=100, amount=25000, triggers=[source_trigger])
+        # Other: padding
+        other = _make_state("Other", price=100, amount=70000)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="Buyer", initial_price=100, initial_amount=5000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="Source", initial_price=100, initial_amount=25000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="Other", initial_price=100, initial_amount=70000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+            ],
+        )
+
+        execute_rebalance([buyer, source, other], 0, {}, config, 0)
+
+        # Source should not go below 20% of portfolio
+        total = buyer.amount + source.amount + other.amount
+        source_share = source.amount / total * 100 if total > 0 else 0
+        assert source_share >= 19.5  # tolerance for fees
+
+    def test_target_not_bought_above_share_ceiling(self):
+        """Target with share_exceeds 60% trigger should not be bought above 60% portfolio share."""
+        # Buyer has a share_exceeds 60% trigger (making 60% its implicit ceiling)
+        sell_trigger = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.SHARE_EXCEEDS.value,
+            threshold_pct=60.0,
+            target_bucket="Source",
+        )
+        buy_trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=80.0,
+            source_buckets=["Source"],
+        )
+        # Buyer at 55%, wants to reach 80% but ceiling is 60%
+        buyer = _make_state("Buyer", price=100, amount=55000,
+                            triggers=[sell_trigger, buy_trigger])
+        source = _make_state("Source", price=100, amount=45000)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="Buyer", initial_price=100, initial_amount=55000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="Source", initial_price=100, initial_amount=45000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+            ],
+        )
+
+        execute_rebalance([buyer, source], 0, {}, config, 0)
+
+        # Buyer should not exceed 60% of portfolio
+        total = buyer.amount + source.amount
+        buyer_share = buyer.amount / total * 100 if total > 0 else 0
+        assert buyer_share <= 60.5  # small tolerance
+
+    def test_share_floor_respected_in_cash_pool_refill(self):
+        """Cash pool refill should respect source's implicit share% floor."""
+        source_trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=40.0,
+            source_buckets=["Other"],
+        )
+        # Source has 40% floor, starts at 50%
+        source = _make_state("Source", price=200, amount=50000,
+                             initial_price=100, buy_sell_fee_pct=0,
+                             triggers=[source_trigger])
+        other = _make_state("Other", price=100, amount=50000,
+                            initial_price=100, buy_sell_fee_pct=0)
+
+        cash_pool = CashPoolState(amount=0, refill_trigger_months=12, refill_target_months=24, cash_floor_months=0)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            cash_pool=CashPool(initial_amount=0, refill_trigger_months=12, refill_target_months=24, cash_floor_months=0),
+            buckets=[
+                InvestmentBucket(name="Source", initial_price=100, initial_amount=50000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=0),
+                InvestmentBucket(name="Other", initial_price=100, initial_amount=50000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=0),
+            ],
+        )
+
+        execute_rebalance([source, other], 1000, {}, config, 0, cash_pool=cash_pool)
+
+        # Source should not go below 40% of portfolio
+        total = source.amount + other.amount
+        source_share = source.amount / total * 100 if total > 0 else 0
+        assert source_share >= 39.0  # tolerance
+
+    def test_share_ceiling_respected_in_sell_trigger_target(self):
+        """Sell trigger proceeds should not push target above its ceiling."""
+        sell_trigger = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.TAKE_PROFIT.value,
+            threshold_pct=1.0,
+            target_bucket="Target",
+        )
+        # Target has share_exceeds 60% trigger (ceiling)
+        target_ceiling_trigger = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.SHARE_EXCEEDS.value,
+            threshold_pct=60.0,
+            target_bucket="Seller",
+        )
+        # Seller: price doubled, will trigger take profit
+        seller = _make_state("Seller", price=200, amount=30000,
+                             initial_price=100, target_growth_pct=10,
+                             triggers=[sell_trigger])
+        # Target: already at 55% (55000/100000)
+        target = _make_state("Target", price=1, amount=55000,
+                             initial_price=1, triggers=[target_ceiling_trigger])
+        # Padding
+        padding = _make_state("Padding", price=100, amount=15000)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="Seller", initial_price=100, initial_amount=30000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="Target", initial_price=1, initial_amount=55000,
+                                 growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0),
+                InvestmentBucket(name="Padding", initial_price=100, initial_amount=15000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5),
+            ],
+        )
+
+        execute_rebalance([seller, target, padding], 0, {}, config, 0)
+
+        # Target should not exceed 60% of portfolio
+        total = seller.amount + target.amount + padding.amount
+        target_share = target.amount / total * 100 if total > 0 else 0
+        assert target_share <= 60.5  # small tolerance
+
+
+class TestMultiSourceBackwardCompat:
+    def test_target_bucket_auto_migrates_to_source_buckets(self):
+        """Buy trigger with target_bucket and empty source_buckets should auto-migrate."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.DISCOUNT.value,
+            threshold_pct=5.0,
+            target_bucket="Cash",
+        )
+        assert trigger.source_buckets == ["Cash"]
+
+    def test_source_buckets_not_overwritten_when_set(self):
+        """If source_buckets is explicitly set, target_bucket should not overwrite it."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.DISCOUNT.value,
+            threshold_pct=5.0,
+            target_bucket="Cash",
+            source_buckets=["Bonds", "Gold"],
+        )
+        assert trigger.source_buckets == ["Bonds", "Gold"]
+
+    def test_roundtrip_with_source_buckets(self):
+        """Config with source_buckets should serialize and deserialize correctly."""
+        triggers = [
+            BucketTrigger(
+                trigger_type=TriggerType.BUY,
+                subtype=BuySubtype.DISCOUNT.value,
+                threshold_pct=10.0,
+                source_buckets=["Cash", "Bonds"],
+                period_months=12,
+            ),
+        ]
+        config = SimConfig(
+            period_years=5,
+            expenses_currency="USD",
+            buckets=[
+                InvestmentBucket(
+                    name="SP500", initial_price=100, initial_amount=50000,
+                    growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+                    triggers=triggers,
+                ),
+            ],
+        )
+
+        json_str = config.model_dump_json()
+        loaded = SimConfig.model_validate_json(json_str)
+
+        b = loaded.buckets[0]
+        assert len(b.triggers) == 1
+        assert b.triggers[0].source_buckets == ["Cash", "Bonds"]

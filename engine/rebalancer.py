@@ -49,8 +49,9 @@ class BucketState:
 class CashPoolState:
     """Mutable state for the cash pool (expenses currency only)."""
     amount: float = 0.0
+    refill_trigger_months: float = 12.0
     refill_target_months: float = 24.0
-    cash_floor_months: float = 12.0
+    cash_floor_months: float = 6.0
     # Monthly tracking
     net_spent: float = 0.0  # expenses drawn this month
 
@@ -158,6 +159,50 @@ def _portfolio_total_expenses_currency(
         _bucket_value_in_expenses_currency(b, get_fx_rate(b.currency, expenses_currency, fx_rates))
         for b in bucket_states
     )
+
+
+def _get_share_floor(bucket_state: BucketState) -> float | None:
+    """Return implicit share% floor from share_below buy triggers, or None."""
+    for t in bucket_state.triggers:
+        if t.trigger_type == TriggerType.BUY and t.subtype == BuySubtype.SHARE_BELOW.value:
+            return t.threshold_pct
+    return None
+
+
+def _get_share_ceiling(bucket_state: BucketState) -> float | None:
+    """Return implicit share% ceiling from share_exceeds sell triggers, or None."""
+    for t in bucket_state.triggers:
+        if t.trigger_type == TriggerType.SELL and t.subtype == SellSubtype.SHARE_EXCEEDS.value:
+            return t.threshold_pct
+    return None
+
+
+def _available_to_sell(
+    bucket: BucketState,
+    month_expense: float,
+    fx_rate: float,
+    bucket_states: list[BucketState],
+    fx_rates: dict[str, float],
+    expenses_currency: str,
+) -> float:
+    """Compute how much (in expenses currency) can be sold from a bucket respecting all floors.
+
+    Floors considered:
+    1. Cash floor: bucket.cash_floor_months * month_expense
+    2. Share% floor: if bucket has a share_below X% trigger, don't sell below portfolio_total * X%
+    Returns amount in expenses currency.
+    """
+    bucket_value = bucket.amount * fx_rate
+    # Cash floor
+    cash_floor = bucket.cash_floor_months * month_expense
+    # Share% floor
+    share_floor_pct = _get_share_floor(bucket)
+    share_floor = 0.0
+    if share_floor_pct is not None:
+        portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency)
+        share_floor = portfolio_total * share_floor_pct / 100.0
+    effective_floor = max(cash_floor, share_floor)
+    return max(0.0, bucket_value - effective_floor)
 
 
 def _bucket_profitability(
@@ -271,6 +316,18 @@ def _execute_sell_trigger(
             proceeds_expenses -= fx_fee
             target.fees_paid += fx_fee
 
+        # Enforce target's share ceiling (implicit from share_exceeds trigger)
+        target_ceiling_pct = _get_share_ceiling(target)
+        if target_ceiling_pct is not None:
+            portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency)
+            target_value = target.amount * target_fx
+            ceiling_value = portfolio_total * target_ceiling_pct / 100.0
+            headroom = max(0.0, ceiling_value - target_value)
+            proceeds_expenses = min(proceeds_expenses, headroom)
+
+        if proceeds_expenses <= 0:
+            return
+
         buy_amount_target = proceeds_expenses / target_fx if target_fx > 0 else 0
         invested, buy_fee = compute_buy(buy_amount_target, target.buy_sell_fee_pct)
         target.amount += invested
@@ -287,13 +344,19 @@ def _execute_buy_trigger(
     fx_rates: dict[str, float],
     config: SimConfig,
 ) -> None:
-    """Execute a single buy trigger if conditions are met."""
+    """Execute a single buy trigger if conditions are met.
+
+    Sells from source_buckets in profitability order (profitable first, then
+    user-defined priority order for losing sources). Each source is sold down
+    to its floors (cash floor + implicit share% floor).
+    """
     expenses_currency = config.expenses_currency
     capital_gain_tax_pct = config.capital_gain_tax_pct
     name_to_state = {b.name: b for b in bucket_states}
 
     should_buy = False
-    buy_value_expenses = 0.0  # how much to buy in expenses currency
+    buy_value_expenses = 0.0  # how much to buy in expenses currency (0 = unlimited/all available)
+    unlimited_buy = False
 
     if trigger.subtype == BuySubtype.DISCOUNT.value:
         # Buy if 100 * target_price / current_price - 100 > threshold%
@@ -304,6 +367,7 @@ def _execute_buy_trigger(
         if discount_pct <= trigger.threshold_pct:
             return
         should_buy = True
+        unlimited_buy = True  # sell all available from sources down to floors
 
     elif trigger.subtype == BuySubtype.SHARE_BELOW.value:
         # Buy if bucket's share of portfolio < threshold%
@@ -323,68 +387,107 @@ def _execute_buy_trigger(
     if not should_buy:
         return
 
-    # Source bucket to sell from
-    if not trigger.target_bucket or trigger.target_bucket not in name_to_state:
-        return
-    source = name_to_state[trigger.target_bucket]
-
-    # Runaway guard on the source bucket
-    runway = _cash_runway_months(bucket_states, month_expense, fx_rates, expenses_currency)
-    if runway < source.required_runaway_months:
+    # Resolve source buckets
+    sources = []
+    for sname in trigger.source_buckets:
+        if sname in name_to_state:
+            sources.append(name_to_state[sname])
+    if not sources:
         return
 
-    source_fx = get_fx_rate(source.currency, expenses_currency, fx_rates)
+    # Enforce buyer's share ceiling (implicit from share_exceeds trigger)
     buyer_fx = get_fx_rate(buyer.currency, expenses_currency, fx_rates)
+    buyer_ceiling_pct = _get_share_ceiling(buyer)
+    if buyer_ceiling_pct is not None:
+        portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency)
+        buyer_value = buyer.amount * buyer_fx
+        ceiling_value = portfolio_total * buyer_ceiling_pct / 100.0
+        headroom = max(0.0, ceiling_value - buyer_value)
+        if not unlimited_buy:
+            buy_value_expenses = min(buy_value_expenses, headroom)
+        else:
+            buy_value_expenses = headroom
+            unlimited_buy = False
+        if buy_value_expenses <= 0:
+            return
 
-    # For discount trigger, use a reasonable buy amount (e.g., 10% of source holdings)
-    if trigger.subtype == BuySubtype.DISCOUNT.value:
-        buy_value_expenses = source.amount * source_fx * 0.1  # buy with 10% of source
+    # Compute profitability for each source and sort
+    source_info = []
+    for s in sources:
+        s_fx = get_fx_rate(s.currency, expenses_currency, fx_rates)
+        conv_fee_pct = get_conversion_fee_pct(s.currency, expenses_currency, config)
+        profit = _bucket_profitability(s, s_fx, s.buy_sell_fee_pct, conv_fee_pct, expenses_currency)
+        avail = _available_to_sell(s, month_expense, s_fx, bucket_states, fx_rates, expenses_currency)
+        source_info.append((s, profit, s_fx, avail))
 
-    if buy_value_expenses <= 0:
+    # Sort: profitable descending first, then unprofitable in original list order
+    profitable = [(s, p, fx, av) for s, p, fx, av in source_info if p > 0]
+    unprofitable = [(s, p, fx, av) for s, p, fx, av in source_info if p <= 0]
+    profitable.sort(key=lambda x: x[1], reverse=True)
+    # unprofitable keeps original order (user-defined priority)
+    sorted_sources = profitable + unprofitable
+
+    # Sell from sources
+    remaining_need = buy_value_expenses
+    total_proceeds_expenses = 0.0
+
+    for source, _profit, source_fx, available in sorted_sources:
+        if not unlimited_buy and remaining_need <= 0:
+            break
+        if available <= 0 or source_fx <= 0:
+            continue
+
+        # Runaway guard on the source bucket
+        runway = _cash_runway_months(bucket_states, month_expense, fx_rates, expenses_currency)
+        if runway < source.required_runaway_months:
+            continue
+
+        if unlimited_buy:
+            sell_expenses = available
+        else:
+            sell_expenses = min(remaining_need, available)
+
+        sell_bucket_currency = sell_expenses / source_fx
+
+        net_proceeds, sell_fee = compute_sell(sell_bucket_currency, source.buy_sell_fee_pct)
+
+        # Capital gains tax on source sell
+        cost_basis = _compute_cost_basis(source, sell_bucket_currency)
+        gain = net_proceeds - cost_basis
+        tax = max(0, gain * capital_gain_tax_pct / 100.0)
+        after_tax = net_proceeds - tax
+
+        source.amount -= sell_bucket_currency
+        source.amount_sold += sell_bucket_currency
+        source.fees_paid += sell_fee * source_fx
+        source.tax_paid += tax * source_fx
+
+        # Convert to expenses currency
+        proceeds_expenses = after_tax * source_fx
+
+        # Apply FX conversion fees if cross-currency
+        source_conv_fee_pct = get_conversion_fee_pct(source.currency, expenses_currency, config)
+        if source.currency != expenses_currency:
+            fx_fee = proceeds_expenses * source_conv_fee_pct / 100.0
+            proceeds_expenses -= fx_fee
+            source.fees_paid += fx_fee
+
+        total_proceeds_expenses += proceeds_expenses
+        if not unlimited_buy:
+            remaining_need -= proceeds_expenses
+
+    if total_proceeds_expenses <= 0:
         return
 
-    # Don't sell more than what's available in source (respect cash floor)
-    source_value_expenses = source.amount * source_fx
-    source_floor = source.cash_floor_months * month_expense
-    available_expenses = max(0, source_value_expenses - source_floor)
-    buy_value_expenses = min(buy_value_expenses, available_expenses)
-
-    if buy_value_expenses <= 0:
-        return
-
-    # Sell from source
-    sell_amount_source = buy_value_expenses / source_fx if source_fx > 0 else 0
-    net_proceeds, sell_fee = compute_sell(sell_amount_source, source.buy_sell_fee_pct)
-
-    # Capital gains tax on source sell
-    cost_basis = _compute_cost_basis(source, sell_amount_source)
-    gain = net_proceeds - cost_basis
-    tax = max(0, gain * capital_gain_tax_pct / 100.0)
-    after_tax = net_proceeds - tax
-
-    source.amount -= sell_amount_source
-    source.amount_sold += sell_amount_source
-    source.fees_paid += sell_fee * source_fx
-    source.tax_paid += tax * source_fx
-
-    # Convert to expenses currency
-    proceeds_expenses = after_tax * source_fx
-
-    # Apply FX conversion fees if cross-currency
-    source_conv_fee_pct = get_conversion_fee_pct(source.currency, expenses_currency, config)
-    if source.currency != expenses_currency:
-        fx_fee = proceeds_expenses * source_conv_fee_pct / 100.0
-        proceeds_expenses -= fx_fee
-        source.fees_paid += fx_fee
-
+    # Apply buyer FX conversion fee if cross-currency
     buyer_conv_fee_pct = get_conversion_fee_pct(buyer.currency, expenses_currency, config)
     if buyer.currency != expenses_currency:
-        fx_fee = proceeds_expenses * buyer_conv_fee_pct / 100.0
-        proceeds_expenses -= fx_fee
+        fx_fee = total_proceeds_expenses * buyer_conv_fee_pct / 100.0
+        total_proceeds_expenses -= fx_fee
         buyer.fees_paid += fx_fee
 
     # Buy into buyer bucket
-    buy_amount_buyer = proceeds_expenses / buyer_fx if buyer_fx > 0 else 0
+    buy_amount_buyer = total_proceeds_expenses / buyer_fx if buyer_fx > 0 else 0
     invested, buy_fee = compute_buy(buy_amount_buyer, buyer.buy_sell_fee_pct)
     buyer.amount += invested
     buyer.amount_bought += invested
@@ -407,9 +510,11 @@ def _refill_cash_pool(
     if month_expense <= 0:
         return
 
-    target_amount = cash_pool.refill_target_months * month_expense
-    if cash_pool.amount >= target_amount:
+    trigger_amount = cash_pool.refill_trigger_months * month_expense
+    if cash_pool.amount >= trigger_amount:
         return
+
+    target_amount = cash_pool.refill_target_months * month_expense
 
     needed = target_amount - cash_pool.amount
     expenses_currency = config.expenses_currency
@@ -441,9 +546,9 @@ def _refill_cash_pool(
         if fx <= 0:
             continue
 
-        bucket_value_expenses = b.amount * fx
-        floor_amount_expenses = b.cash_floor_months * month_expense
-        available_expenses = max(0, bucket_value_expenses - floor_amount_expenses)
+        available_expenses = _available_to_sell(
+            b, month_expense, fx, bucket_states, fx_rates, expenses_currency,
+        )
 
         if available_expenses <= 0:
             continue
@@ -474,6 +579,64 @@ def _refill_cash_pool(
 
         cash_pool.amount += net_in_expenses
         needed -= net_in_expenses
+
+
+def _cover_expenses_from_buckets(
+    remaining_expense: float,
+    bucket_states: list[BucketState],
+    month_expense: float,
+    fx_rates: dict[str, float],
+    config: SimConfig,
+) -> float:
+    """Cover expenses by selling from buckets in spending priority order.
+
+    Returns the remaining uncovered expense amount.
+    """
+    expenses_currency = config.expenses_currency
+    capital_gain_tax_pct = config.capital_gain_tax_pct
+    spending_order = sorted(bucket_states, key=lambda b: b.spending_priority)
+
+    for b in spending_order:
+        if remaining_expense <= 0:
+            break
+
+        fx = get_fx_rate(b.currency, expenses_currency, fx_rates)
+        if fx <= 0:
+            continue
+
+        bucket_value_expenses = b.amount * fx
+        floor_amount_expenses = b.cash_floor_months * month_expense
+        available_expenses = max(0, bucket_value_expenses - floor_amount_expenses)
+
+        if available_expenses <= 0:
+            continue
+
+        sell_expenses = min(remaining_expense, available_expenses)
+        sell_bucket_currency = sell_expenses / fx
+
+        net_proceeds, fee = compute_sell(sell_bucket_currency, b.buy_sell_fee_pct)
+
+        cost_basis = _compute_cost_basis(b, sell_bucket_currency)
+        gain = net_proceeds - cost_basis
+        tax = max(0, gain * capital_gain_tax_pct / 100.0)
+        after_tax = net_proceeds - tax
+
+        conv_fee_pct = get_conversion_fee_pct(b.currency, expenses_currency, config)
+        net_in_expenses = after_tax * fx
+        if b.currency != expenses_currency:
+            fx_fee = net_in_expenses * conv_fee_pct / 100.0
+            net_in_expenses -= fx_fee
+            b.fees_paid += fx_fee
+
+        b.amount -= sell_bucket_currency
+        b.amount_sold += sell_bucket_currency
+        b.fees_paid += fee * fx
+        b.tax_paid += tax * fx
+        b.net_spent += net_in_expenses
+
+        remaining_expense -= net_in_expenses
+
+    return remaining_expense
 
 
 def execute_rebalance(
@@ -512,62 +675,30 @@ def execute_rebalance(
 
     # --- Phase 2: Cover expenses ---
     if cash_pool is not None:
+        # If cash pool is insufficient, refill it first
+        if cash_pool.amount < month_expense:
+            _refill_cash_pool(cash_pool, bucket_states, month_expense, fx_rates, config)
+
         # Draw expenses from cash pool
         drawn = min(cash_pool.amount, month_expense)
         cash_pool.amount -= drawn
         cash_pool.net_spent = drawn
         remaining_expense = month_expense - drawn
-        # Any shortfall is uncovered (will show as red in output)
-        total_covered = drawn
-    else:
-        # Legacy path: cover expenses from buckets directly
-        remaining_expense = month_expense
-        capital_gain_tax_pct = config.capital_gain_tax_pct
-        spending_order = sorted(bucket_states, key=lambda b: b.spending_priority)
 
-        for b in spending_order:
-            if remaining_expense <= 0:
-                break
-
-            fx = get_fx_rate(b.currency, expenses_currency, fx_rates)
-            if fx <= 0:
-                continue
-
-            bucket_value_expenses = b.amount * fx
-            floor_amount_expenses = b.cash_floor_months * month_expense
-            available_expenses = max(0, bucket_value_expenses - floor_amount_expenses)
-
-            if available_expenses <= 0:
-                continue
-
-            sell_expenses = min(remaining_expense, available_expenses)
-            sell_bucket_currency = sell_expenses / fx
-
-            net_proceeds, fee = compute_sell(sell_bucket_currency, b.buy_sell_fee_pct)
-
-            cost_basis = _compute_cost_basis(b, sell_bucket_currency)
-            gain = net_proceeds - cost_basis
-            tax = max(0, gain * capital_gain_tax_pct / 100.0)
-            after_tax = net_proceeds - tax
-
-            conv_fee_pct = get_conversion_fee_pct(b.currency, expenses_currency, config)
-            net_in_expenses = after_tax * fx
-            if b.currency != expenses_currency:
-                fx_fee = net_in_expenses * conv_fee_pct / 100.0
-                net_in_expenses -= fx_fee
-                b.fees_paid += fx_fee
-
-            b.amount -= sell_bucket_currency
-            b.amount_sold += sell_bucket_currency
-            b.fees_paid += fee * fx
-            b.tax_paid += tax * fx
-            b.net_spent += net_in_expenses
-
-            remaining_expense -= net_in_expenses
+        # If cash pool still couldn't cover, fall through to direct bucket selling
+        if remaining_expense > 0:
+            remaining_expense = _cover_expenses_from_buckets(
+                remaining_expense, bucket_states, month_expense, fx_rates, config,
+            )
 
         total_covered = month_expense - max(0, remaining_expense)
+    else:
+        remaining_expense = _cover_expenses_from_buckets(
+            month_expense, bucket_states, month_expense, fx_rates, config,
+        )
+        total_covered = month_expense - max(0, remaining_expense)
 
-    # --- Phase 3: Refill cash pool ---
+    # --- Phase 3: Refill cash pool (post-expenses, if still below trigger) ---
     if cash_pool is not None:
         _refill_cash_pool(cash_pool, bucket_states, month_expense, fx_rates, config)
 

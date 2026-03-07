@@ -25,6 +25,7 @@ class TriggerDialog(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("Bucket Trigger")
+        self._bucket_names = existing_bucket_names or []
         layout = QVBoxLayout(self)
         form = QFormLayout()
         layout.addLayout(form)
@@ -48,16 +49,46 @@ class TriggerDialog(QDialog):
         )
         form.addRow("Threshold:", self._threshold)
 
+        # --- Sell trigger: single target bucket ---
         self._target_bucket = QComboBox()
         self._target_bucket.setEditable(True)
         self._target_bucket.addItem("")
         self._target_bucket.setToolTip(
-            "Sell triggers: target bucket to buy with proceeds. "
-            "Buy triggers: source bucket to sell from to fund the purchase."
+            "Target bucket to buy with sell proceeds."
         )
-        for name in (existing_bucket_names or []):
+        for name in self._bucket_names:
             self._target_bucket.addItem(name)
-        form.addRow("Target/Source Bucket:", self._target_bucket)
+        self._target_label = QLabel("Target Bucket:")
+        form.addRow(self._target_label, self._target_bucket)
+
+        # --- Buy trigger: ordered source bucket list ---
+        self._source_group = QGroupBox("Source Buckets (priority order)")
+        self._source_group.setToolTip(
+            "Ordered list of buckets to sell from to fund this buy. "
+            "Profitable sources are sold first; within unprofitable, this order is used."
+        )
+        source_layout = QVBoxLayout(self._source_group)
+        self._source_list = QListWidget()
+        source_layout.addWidget(self._source_list)
+        source_btn_row = QHBoxLayout()
+        self._source_add_combo = QComboBox()
+        self._source_add_combo.addItems(self._bucket_names)
+        self._source_add_combo.setEditable(True)
+        source_btn_row.addWidget(self._source_add_combo)
+        self._btn_source_add = QPushButton("Add")
+        self._btn_source_remove = QPushButton("Remove")
+        self._btn_source_up = QPushButton("Up")
+        self._btn_source_down = QPushButton("Down")
+        for btn in (self._btn_source_add, self._btn_source_remove,
+                     self._btn_source_up, self._btn_source_down):
+            source_btn_row.addWidget(btn)
+        source_layout.addLayout(source_btn_row)
+        layout.addWidget(self._source_group)
+
+        self._btn_source_add.clicked.connect(self._add_source)
+        self._btn_source_remove.clicked.connect(self._remove_source)
+        self._btn_source_up.clicked.connect(self._move_source_up)
+        self._btn_source_down.clicked.connect(self._move_source_down)
 
         self._period_months = QSpinBox()
         self._period_months.setRange(1, 120)
@@ -84,29 +115,77 @@ class TriggerDialog(QDialog):
 
     def _on_type_changed(self, type_text: str):
         self._subtype.clear()
-        if type_text == TriggerType.SELL.value:
+        is_sell = type_text == TriggerType.SELL.value
+        if is_sell:
             self._subtype.addItems([s.value for s in SellSubtype])
         else:
             self._subtype.addItems([s.value for s in BuySubtype])
+        # Show/hide appropriate widgets
+        self._target_label.setVisible(is_sell)
+        self._target_bucket.setVisible(is_sell)
+        self._source_group.setVisible(not is_sell)
+
+    def _add_source(self):
+        name = self._source_add_combo.currentText().strip()
+        if name:
+            self._source_list.addItem(name)
+
+    def _remove_source(self):
+        row = self._source_list.currentRow()
+        if row >= 0:
+            self._source_list.takeItem(row)
+
+    def _move_source_up(self):
+        row = self._source_list.currentRow()
+        if row > 0:
+            item = self._source_list.takeItem(row)
+            self._source_list.insertItem(row - 1, item)
+            self._source_list.setCurrentRow(row - 1)
+
+    def _move_source_down(self):
+        row = self._source_list.currentRow()
+        if 0 <= row < self._source_list.count() - 1:
+            item = self._source_list.takeItem(row)
+            self._source_list.insertItem(row + 1, item)
+            self._source_list.setCurrentRow(row + 1)
 
     def _load(self, t: BucketTrigger):
         self._type.setCurrentText(t.trigger_type.value)
         self._on_type_changed(t.trigger_type.value)
         self._subtype.setCurrentText(t.subtype)
         self._threshold.setValue(t.threshold_pct)
-        if t.target_bucket:
-            self._target_bucket.setCurrentText(t.target_bucket)
+        if t.trigger_type == TriggerType.SELL:
+            if t.target_bucket:
+                self._target_bucket.setCurrentText(t.target_bucket)
+        else:
+            self._source_list.clear()
+            for name in t.source_buckets:
+                self._source_list.addItem(name)
         self._period_months.setValue(t.period_months)
 
     def get_trigger(self) -> BucketTrigger:
-        target = self._target_bucket.currentText().strip() or None
-        return BucketTrigger(
-            trigger_type=TriggerType(self._type.currentText()),
-            subtype=self._subtype.currentText(),
-            threshold_pct=self._threshold.value(),
-            target_bucket=target,
-            period_months=self._period_months.value(),
-        )
+        trigger_type = TriggerType(self._type.currentText())
+        if trigger_type == TriggerType.SELL:
+            target = self._target_bucket.currentText().strip() or None
+            return BucketTrigger(
+                trigger_type=trigger_type,
+                subtype=self._subtype.currentText(),
+                threshold_pct=self._threshold.value(),
+                target_bucket=target,
+                period_months=self._period_months.value(),
+            )
+        else:
+            sources = [
+                self._source_list.item(i).text()
+                for i in range(self._source_list.count())
+            ]
+            return BucketTrigger(
+                trigger_type=trigger_type,
+                subtype=self._subtype.currentText(),
+                threshold_pct=self._threshold.value(),
+                source_buckets=sources,
+                period_months=self._period_months.value(),
+            )
 
 
 class BucketDialog(QDialog):
@@ -266,7 +345,11 @@ class BucketDialog(QDialog):
             self._runaway.setValue(6)
 
     def _trigger_display(self, t: BucketTrigger) -> str:
-        target = f" -> {t.target_bucket}" if t.target_bucket else ""
+        if t.trigger_type == TriggerType.BUY:
+            sources = ", ".join(t.source_buckets) if t.source_buckets else "none"
+            target = f" <- [{sources}]"
+        else:
+            target = f" -> {t.target_bucket}" if t.target_bucket else ""
         period = f"every {t.period_months}mo" if t.period_months > 1 else "monthly"
         return f"{t.trigger_type.value}/{t.subtype}: {t.threshold_pct}{target} ({period})"
 

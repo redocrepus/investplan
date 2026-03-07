@@ -223,24 +223,66 @@ class TestBucketTrigger:
         )
         assert t.period_months == 6
 
+    def test_buy_trigger_requires_source_buckets(self):
+        with pytest.raises(ValueError, match="source bucket"):
+            BucketTrigger(
+                trigger_type=TriggerType.BUY,
+                subtype=BuySubtype.DISCOUNT.value,
+                threshold_pct=5.0,
+            )
+
+    def test_buy_trigger_auto_migrates_target_bucket(self):
+        t = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.DISCOUNT.value,
+            threshold_pct=5.0,
+            target_bucket="Cash",
+        )
+        assert t.source_buckets == ["Cash"]
+
+    def test_buy_trigger_with_source_buckets(self):
+        t = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=20.0,
+            source_buckets=["Cash", "Bonds"],
+        )
+        assert t.source_buckets == ["Cash", "Bonds"]
+
+    def test_buy_trigger_source_buckets_not_overwritten(self):
+        t = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.DISCOUNT.value,
+            threshold_pct=5.0,
+            target_bucket="Cash",
+            source_buckets=["Bonds"],
+        )
+        assert t.source_buckets == ["Bonds"]
+
 
 class TestCashPool:
     def test_default(self):
         from models.config import CashPool
         cp = CashPool()
         assert cp.initial_amount == 0.0
+        assert cp.refill_trigger_months == 12.0
         assert cp.refill_target_months == 24.0
-        assert cp.cash_floor_months == 12.0
+        assert cp.cash_floor_months == 6.0
 
     def test_valid(self):
         from models.config import CashPool
-        cp = CashPool(initial_amount=50000, refill_target_months=12, cash_floor_months=6)
+        cp = CashPool(initial_amount=50000, refill_trigger_months=6, refill_target_months=12, cash_floor_months=6)
         assert cp.initial_amount == 50000
 
     def test_negative_initial_amount(self):
         from models.config import CashPool
         with pytest.raises(ValueError):
             CashPool(initial_amount=-1)
+
+    def test_negative_refill_trigger(self):
+        from models.config import CashPool
+        with pytest.raises(ValueError):
+            CashPool(refill_trigger_months=-1)
 
     def test_negative_refill_target(self):
         from models.config import CashPool
