@@ -236,8 +236,8 @@ Critical fixes identified during financial review. Tests must be strengthened to
 - [x] Yearly trigger logic covered by existing TestTriggerPeriodMonths tests (months 0, 12, 24, and non-fire months)
 
 **P3 — Robustness improvements:**
-- [ ] Add exception handling in `SimulationThread` — propagate errors to GUI
-- [ ] Improve `_autosave()` error handling — log or notify instead of silently swallowing exceptions
+- [x] Add exception handling in `SimulationThread` — errors now propagated via `error` signal to GUI with dialog + status bar
+- [x] Improve `_autosave()` error handling — failures now shown in status bar instead of silently swallowed
 
 **Volatility calibration notes** (for future tuning, no code change required now):
 - Gov bonds σ=0.5%/mo (~1.7% annualized) — slightly low vs historical ~2-4%

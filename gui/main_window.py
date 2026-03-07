@@ -26,15 +26,19 @@ from gui.dialogs.montecarlo_dialog import MonteCarloDialog
 class SimulationThread(QThread):
     """Run simulation in a background thread."""
     finished = pyqtSignal(object)  # emits the DataFrame
+    error = pyqtSignal(str)        # emits error message on failure
 
     def __init__(self, config: SimConfig, parent=None):
         super().__init__(parent)
         self.config = config
 
     def run(self):
-        rng = np.random.default_rng()
-        df = run_simulation(self.config, rng)
-        self.finished.emit(df)
+        try:
+            rng = np.random.default_rng()
+            df = run_simulation(self.config, rng)
+            self.finished.emit(df)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 _AUTOSAVE_PATH = os.path.join(
@@ -168,8 +172,8 @@ class MainWindow(QMainWindow):
             config = self._collect_config()
             with open(_AUTOSAVE_PATH, "w") as f:
                 f.write(config.model_dump_json(indent=2))
-        except Exception:
-            pass  # best-effort
+        except Exception as e:
+            self._statusbar.showMessage(f"Autosave failed: {e}")
 
     def _restore_autosave(self):
         if not os.path.exists(_AUTOSAVE_PATH):
@@ -251,6 +255,7 @@ class MainWindow(QMainWindow):
         self._statusbar.showMessage("Running simulation...")
         self._sim_thread = SimulationThread(config)
         self._sim_thread.finished.connect(self._on_simulation_done)
+        self._sim_thread.error.connect(self._on_simulation_error)
         self._sim_thread.start()
 
     def _on_simulation_done(self, df):
@@ -260,6 +265,11 @@ class MainWindow(QMainWindow):
         self._table_view.resizeColumnsToContents()
         self._act_run.setEnabled(True)
         self._statusbar.showMessage("Simulation complete")
+
+    def _on_simulation_error(self, message: str):
+        self._act_run.setEnabled(True)
+        self._statusbar.showMessage(f"Simulation failed: {message}")
+        QMessageBox.critical(self, "Simulation Error", f"Simulation failed:\n{message}")
 
     def _on_run_monte_carlo(self):
         config = self._collect_config()
