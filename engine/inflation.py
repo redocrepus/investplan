@@ -34,7 +34,7 @@ def simulate_monthly_inflation(
     for i in range(n_months):
         # Mean-reverting step
         drift = reversion_speed * (avg_monthly - current)
-        shock = rng.normal(0, spec.monthly_sigma / 12.0)
+        shock = rng.normal(0, spec.monthly_sigma)
         current = current + drift + shock
         # Clamp to bounds
         current = np.clip(current, min_monthly, max_monthly)
