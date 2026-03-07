@@ -42,7 +42,7 @@ investplan/
 │   │   ├── header.py         # Two-level header (bucket / column)
 │   │   └── delegates.py      # Cell coloring, number formatting
 │   ├── panels/
-│   │   ├── global_panel.py   # Period, currency, tax, hedge, inflation
+│   │   ├── global_panel.py   # Period, currency, tax, inflation
 │   │   ├── bucket_panel.py   # Add/edit/remove investment buckets
 │   │   ├── expense_panel.py  # Expense periods + one-time expenses
 │   │   └── currency_panel.py # Per-currency FX settings
@@ -80,7 +80,7 @@ investplan/
 
 ### Stage 1 — Project Skeleton & Data Models ✅
 - [x] Create directory structure and `requirements.txt`
-- [x] Implement `models/config.py` — top-level `SimConfig` (period, currency, tax, hedge)
+- [x] Implement `models/config.py` — top-level `SimConfig` (period, currency, tax)
 - [x] Implement `models/inflation.py` — `InflationSettings` (min/max/avg/volatility)
 - [x] Implement `models/expense.py` — `ExpensePeriod`, `OneTimeExpense`
 - [x] Implement `models/currency.py` — `CurrencySettings` (FX min/max/avg/volatility/fee)
@@ -126,7 +126,6 @@ investplan/
 - [x] `gui/panels/global_panel.py`
   - [x] Investment period (years spinner)
   - [x] Expenses currency (combobox, locale default)
-  - [x] Total hedge amount
   - [x] Capital gain tax %
   - [x] Inflation settings (min/max/avg/volatility)
 - [x] `gui/panels/expense_panel.py`
@@ -209,21 +208,28 @@ Replaced the single-trigger `RebalancingParams` model with a flexible multi-trig
 
 ### Stage 9 — Bug Fixes & Hardening
 
-Critical fixes identified during code review. Tests must be strengthened to assert correct values, not just non-zero output.
+Critical fixes identified during financial review. Tests must be strengthened to assert correct values, not just non-zero output.
 
 **P0 — Critical calculation bugs:**
-- [ ] Fix `_compute_cost_basis()` in `engine/rebalancer.py` — currently returns unit counts instead of cost values. FIFO/LIFO must accumulate `take * lot.price`; AVCO must return `sell_amount * state.avg_cost`
-- [ ] Fix fee/tax currency unit mixing in `engine/rebalancer.py` — `fees_paid` and `tax_paid` accumulate values in inconsistent currency units (some in bucket currency, some in expenses currency). Normalize all to expenses currency before accumulating
+- [ ] Fix `_compute_cost_basis()` in `engine/rebalancer.py` — the function has a fundamental units-vs-value confusion. `PurchaseLot.amount` stores currency values but the cost basis loop treats them as the cost basis directly without adjusting for purchase price. **Requires converting to unit-based lot tracking**: `PurchaseLot` should store units (= currency_amount / price_per_unit), and cost basis = `units_sold * lot.price`. AVCO must return `units_sold * state.avg_cost`. All callers (`_execute_sell_trigger`, `_execute_buy_trigger`, `_refill_cash_pool`, `_cover_expenses_from_buckets`) must convert sell amounts to units via `sell_amount / current_price` before calling `_compute_cost_basis`.
+- [ ] Fix Take Profit trigger threshold comparison in `engine/rebalancer.py:253` — `ratio = actual_growth / target_growth` is a pure ratio (e.g. 1.5) but is compared against `threshold_pct` which is in percentage form everywhere else (e.g. discount uses 10 for 10%). A take profit threshold of 100 (meaning 100%) requires `ratio >= 100`, which is impossible. **Take profit triggers never fire.** Fix: compare `ratio * 100 >= threshold_pct` or document threshold as a ratio.
+- [ ] Fix `total_net_spent` when cash pool falls through to bucket selling in `engine/simulator.py:111-113` — when cash pool can't cover expenses and falls through to direct bucket selling, `total_net_spent` is set to `cash_pool.net_spent` only, missing the `sum(b.net_spent)` from the fallthrough. Should be `cash_pool.net_spent + sum(b.net_spent for b in bucket_states)`.
 - [ ] Strengthen cost basis tests with exact expected values (not just `tax_paid > 0`)
+- [ ] Add test verifying take profit trigger fires and produces correct sell amount
 
-**P1 — Missing requirement & volatility bug:**
-- [ ] Implement expense coverage fallback in `engine/rebalancer.py` — when all buckets hit cash floor, sell in reverse spending priority order even if it violates the floor (per Requirements.md)
-- [ ] Fix inflation volatility double-scaling in `engine/inflation.py` — `spec.monthly_sigma / 12.0` divides an already-monthly sigma by 12 again, killing volatility. Remove the `/ 12.0`
+**P1 — Missing requirements & volatility bug:**
+- [ ] Implement expense coverage fallback in `engine/rebalancer.py` — when all buckets hit cash floor, sell in reverse spending priority order even if it violates the floor (per Requirements.md step 4)
+- [ ] Fix inflation volatility double-scaling in `engine/inflation.py:37` — `spec.monthly_sigma / 12.0` divides an already-monthly sigma by 12 again, killing volatility. Remove the `/ 12.0`
+- [ ] Fix `use_cash_pool` condition in `engine/simulator.py:82` — `use_cash_pool = config.cash_pool.initial_amount > 0` disables the cash pool when initial amount is 0 even if refill targets are configured. A user who sets initial cash to 0 but expects the pool to fill from profitable sells gets no cash pool. Should check whether any cash pool feature is meaningfully configured (e.g. `initial_amount > 0 or refill_target_months > 0`).
 - [ ] Add test for expense coverage fallback (all buckets at floor)
 - [ ] Add test verifying inflation volatility range matches profile
 
-**P2 — Logic fixes & validation:**
+**P2 — Logic fixes & financial modeling:**
+- [ ] Fix profitability ordering to use actual cost basis instead of `initial_price` in `engine/rebalancer.py:219` — `_bucket_profitability()` computes gain as `(price - initial_price) / initial_price`. After multiple buys/sells the effective cost basis diverges from initial_price, making "sell most profitable first" ordering inaccurate. Should use the bucket's cost basis (AVCO or lot-weighted average).
+- [ ] Fix sell amount calculation to account for fees/tax shrinkage — when calculating how much to sell to cover a target amount (expenses, cash pool refill, buy triggers), the code sells the face value needed but after sell fees, capital gains tax, and FX conversion fees the net proceeds are less. The shortfall is never recovered, creating systematic underfunding of ~2-5%.
+- [ ] Include cash pool in portfolio total for share% calculations in `engine/rebalancer.py:152-161` — `_portfolio_total_expenses_currency` only sums bucket values. If the cash pool holds a significant portion of wealth, share% triggers overstate each bucket's portfolio share, causing premature "share exceeds" sells and suppressing "share below" buys.
 - [ ] Fix yearly trigger month logic in `engine/rebalancer.py` — `month_idx % 12 != 0` fires in January; decide on correct month and document
+- [ ] Remove log-return clamping slack in `engine/bucket.py:39` — the `±0.01` slack on log-return bounds allows monthly returns to exceed the user's configured min/max growth range
 - [ ] Add trigger target bucket reference validation in `gui/main_window.py` — reject configs where `trigger.target_bucket` doesn't exist in `config.buckets`
 - [ ] Add currency mismatch validation — reject buckets referencing currencies without FX settings
 - [ ] Prevent self-referential triggers (bucket targeting itself)
@@ -232,6 +238,11 @@ Critical fixes identified during code review. Tests must be strengthened to asse
 **P3 — Robustness improvements:**
 - [ ] Add exception handling in `SimulationThread` — propagate errors to GUI
 - [ ] Improve `_autosave()` error handling — log or notify instead of silently swallowing exceptions
+
+**Volatility calibration notes** (for future tuning, no code change required now):
+- Gov bonds σ=0.5%/mo (~1.7% annualized) — slightly low vs historical ~2-4%
+- Gold σ=2.5%/mo (~8.7% annualized) — low vs historical ~12-15%
+- Bitcoin σ=15%/mo (~52% annualized) — slightly low vs historical ~60-80%
 
 ### Stage 10 — Cash Pool & Trigger Period ✅
 
@@ -260,6 +271,36 @@ Added a cash pool (expenses-currency cash reserve) and changed trigger frequency
 - [x] `CashPool` and `BucketTrigger.period_months` model validation
 - [x] Simulator cash pool output columns
 
+### Stage 11 — Multi-Source Buy Triggers & Implicit Share% Floors/Ceilings ✅
+
+Buy triggers now support multiple source buckets with profitability-based ordering, and share-based triggers create implicit portfolio share floors and ceilings.
+
+**Model changes:**
+- [x] Add `source_buckets: list[str]` field to `BucketTrigger` for buy triggers
+- [x] Backward compat: auto-migrate `target_bucket` to `source_buckets` for buy triggers
+- [x] Validation: buy triggers must have at least one source bucket
+
+**Engine changes:**
+- [x] Add `_get_share_floor()` and `_get_share_ceiling()` helpers
+- [x] Add `_available_to_sell()` helper respecting cash floor + share% floor
+- [x] Refactor `_execute_buy_trigger()` for multi-source (profitability ordering, sell down to floors)
+- [x] Discount triggers: sell all available from sources (no arbitrary 10% cap)
+- [x] Enforce buyer's share ceiling in `_execute_buy_trigger()`
+- [x] Enforce target's share ceiling in `_execute_sell_trigger()`
+- [x] Update `_refill_cash_pool()` to use `_available_to_sell()` (respects share% floors)
+
+**GUI changes:**
+- [x] Replace single Target/Source Bucket combobox with context-dependent UI
+- [x] Sell triggers: single Target Bucket combobox (unchanged)
+- [x] Buy triggers: ordered source bucket list with Add/Remove/Up/Down buttons
+- [x] Updated trigger display to show source bucket list for buy triggers
+
+**Tests:**
+- [x] `TestMultiSourceBuyTrigger`: profitability ordering, cash floors, priority fallback, discount sell-all
+- [x] `TestImplicitShareFloors`: share floor on source, share ceiling on target, cash pool refill, sell trigger target
+- [x] `TestMultiSourceBackwardCompat`: auto-migration, roundtrip serialization
+- [x] Model validation: source_buckets required, auto-migration, explicit not overwritten
+
 ---
 
 ## Key Design Decisions
@@ -281,9 +322,26 @@ Growth and FX rates are modeled as log-normal random walks. Inflation uses a mea
 2. Apply FX changes
 3. Calculate this month's expenses (inflation-adjusted)
 4. Run sell triggers (period_months check): Take Profit, Share exceeds X% — subject to runaway guard
-5. Cover expenses: draw from cash pool (if active) or sell from buckets in spending priority order
-6. Refill cash pool: if below target, sell from most profitable bucket first (respecting cash floors)
+5. Cover expenses: if cash pool is insufficient, refill it first (5a), then draw from cash pool. If still insufficient, fall through to direct bucket selling.
+   5a. Refill cash pool: if below refill trigger, sell from most profitable bucket first (respecting cash floors and share% floors) until reaching refill target or sources exhausted.
 7. Run buy triggers (period_months check): Discount >= X%, Share falls below X% — funds from source bucket
 8. Record all outputs to the DataFrame row
 
 **Currency handling:** All cross-currency amounts are converted to Expenses currency at the current simulated FX rate. Fees apply on conversion.
+
+---
+
+## Future Plans
+
+### Near Future
+- [ ] Add inflation-to-asset-return correlation parameters per bucket (configurable coefficient, default 0)
+- [ ] Add inter-bucket return correlation for Monte Carlo (correlation matrix or preset scenarios: crisis/normal/boom)
+- [ ] Sell proceeds formula selection — implement Israeli tax law formula (requires web research on Israeli capital gains tax computation rules)
+- [ ] Switch return distributions per volatility profile: Student's t (df=6) for gov-bonds, Student's t (df=8) for s&p500, Student's t (df=4) for bitcoin; keep log-normal for gold and constant
+
+### Far Future
+- [ ] Dividend / income yield modeling per bucket (annual_yield_%, paid monthly to cash pool)
+- [ ] Monthly contribution / DCA modeling (amount, start/end month, target buckets)
+- [ ] Cash pool annual yield parameter (savings account / money market return)
+- [ ] Short-term vs. long-term capital gains tax rates (with configurable holding period threshold)
+- [ ] Tax-advantaged account flag per bucket (skip capital gains tax on sells)
