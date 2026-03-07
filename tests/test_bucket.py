@@ -60,3 +60,31 @@ class TestComputeBuy:
         invested, fee = compute_buy(1000, 2.0)
         assert fee == 20
         assert invested == 980
+
+
+class TestGrowthRateBounds:
+    def test_log_return_clamped_to_min_max(self):
+        """Monthly log-returns should never exceed configured min/max growth bounds.
+
+        Validates Stage 9 P2 fix: removed ±0.01 slack from clamping.
+        """
+        bucket = InvestmentBucket(
+            name="Test", initial_price=100, initial_amount=10000,
+            growth_min_pct=-20, growth_max_pct=40, growth_avg_pct=10,
+            volatility=VolatilityProfile.SP500,
+        )
+        rng = np.random.default_rng(42)
+        prices = simulate_bucket_prices(bucket, 2400, rng)
+
+        # Compute actual monthly log returns
+        all_prices = np.concatenate([[bucket.initial_price], prices])
+        log_returns = np.diff(np.log(all_prices))
+
+        min_monthly_log = np.log(1 + bucket.growth_min_pct / 100.0) / 12.0
+        max_monthly_log = np.log(1 + bucket.growth_max_pct / 100.0) / 12.0
+
+        # Strict bounds — no slack allowed
+        assert np.all(log_returns >= min_monthly_log - 1e-10), \
+            f"Log return {log_returns.min()} below min {min_monthly_log}"
+        assert np.all(log_returns <= max_monthly_log + 1e-10), \
+            f"Log return {log_returns.max()} above max {max_monthly_log}"
