@@ -364,76 +364,145 @@ class TestMultipleTriggers:
 
 class TestCostBasisFIFO:
     def test_fifo_correct_gains(self):
+        """FIFO: sell 1500 currency at price=150 → 10 units.
+        Lot1: 50 units @ $100, Lot2: 50 units @ $120.
+        FIFO consumes 10 units from Lot1 → cost_basis = 10 * 100 = 1000.
+        Gain = (1500 - fee) - 1000."""
         state = BucketState(
-            name="Test", currency="USD", price=150, amount=100,
+            name="Test", currency="USD", price=150, amount=15000,
             initial_price=100, target_growth_pct=10, buy_sell_fee_pct=0,
             cost_basis_method=CostBasisMethod.FIFO,
         )
-        # Add lots: 50 units at $100, then 50 units at $120
         state.purchase_lots = [
-            PurchaseLot(price=100, amount=50),
-            PurchaseLot(price=120, amount=50),
+            PurchaseLot(price=100, units=50),
+            PurchaseLot(price=120, units=50),
         ]
 
-        # Sell 60 currency — FIFO consumes 50 from the first lot, 10 from the second.
-        cost = _compute_cost_basis(state, 60)
-        expected = 60
+        # Sell 1500 currency at price=150 → 10 units from lot1
+        cost = _compute_cost_basis(state, 1500)
+        expected = 10 * 100  # 10 units at $100 each = $1000
         assert abs(cost - expected) < 0.01
 
-        # First lot should be consumed, second lot should have 40 left
-        assert len(state.purchase_lots) == 1
-        assert abs(state.purchase_lots[0].amount - 40) < 0.01
+        # Lot1 should have 40 units left, lot2 intact
+        assert len(state.purchase_lots) == 2
+        assert abs(state.purchase_lots[0].units - 40) < 0.01
+        assert abs(state.purchase_lots[1].units - 50) < 0.01
 
-    def test_fifo_does_not_scale_by_lot_price(self):
+    def test_fifo_consumes_across_lots(self):
+        """FIFO: sell 9000 currency at price=150 → 60 units.
+        Lot1: 50 units @ $100, Lot2: 50 units @ $120.
+        FIFO: 50 from lot1 + 10 from lot2 → cost = 50*100 + 10*120 = 6200."""
         state = BucketState(
-            name="Test", currency="USD", price=150, amount=5000,
+            name="Test", currency="USD", price=150, amount=15000,
             initial_price=100, target_growth_pct=10, buy_sell_fee_pct=0,
             cost_basis_method=CostBasisMethod.FIFO,
         )
-        state.purchase_lots = [PurchaseLot(price=100, amount=5000)]
+        state.purchase_lots = [
+            PurchaseLot(price=100, units=50),
+            PurchaseLot(price=120, units=50),
+        ]
 
-        # Regression: selling 1000 should not become 1000*price.
-        cost = _compute_cost_basis(state, 1000)
-        assert abs(cost - 1000) < 0.01
+        cost = _compute_cost_basis(state, 9000)  # 60 units at $150
+        expected = 50 * 100 + 10 * 120  # 5000 + 1200 = 6200
+        assert abs(cost - expected) < 0.01
+        assert len(state.purchase_lots) == 1
+        assert abs(state.purchase_lots[0].units - 40) < 0.01
+
+    def test_fifo_gain_is_nonzero_when_price_appreciated(self):
+        """Selling at a higher price than purchase should produce a positive gain."""
+        state = BucketState(
+            name="Test", currency="USD", price=150, amount=7500,
+            initial_price=100, target_growth_pct=10, buy_sell_fee_pct=0,
+            cost_basis_method=CostBasisMethod.FIFO,
+        )
+        # 50 units bought at $100
+        state.purchase_lots = [PurchaseLot(price=100, units=50)]
+
+        sell_amount = 1500  # 10 units at $150
+        cost = _compute_cost_basis(state, sell_amount)
+        assert abs(cost - 1000) < 0.01  # 10 units * $100
+        gain = sell_amount - cost  # 1500 - 1000 = 500
+        assert abs(gain - 500) < 0.01
 
 
 class TestCostBasisLIFO:
     def test_lifo_correct_gains(self):
+        """LIFO: sell 1500 currency at price=150 → 10 units.
+        Lot1: 50 units @ $100, Lot2: 50 units @ $120.
+        LIFO consumes 10 units from Lot2 → cost_basis = 10 * 120 = 1200."""
         state = BucketState(
-            name="Test", currency="USD", price=150, amount=100,
+            name="Test", currency="USD", price=150, amount=15000,
             initial_price=100, target_growth_pct=10, buy_sell_fee_pct=0,
             cost_basis_method=CostBasisMethod.LIFO,
         )
-        # Add lots: 50 units at $100, then 50 units at $120
         state.purchase_lots = [
-            PurchaseLot(price=100, amount=50),
-            PurchaseLot(price=120, amount=50),
+            PurchaseLot(price=100, units=50),
+            PurchaseLot(price=120, units=50),
         ]
 
-        # Sell 60 currency — LIFO consumes 50 from the second lot, 10 from the first.
-        cost = _compute_cost_basis(state, 60)
-        expected = 60
+        cost = _compute_cost_basis(state, 1500)  # 10 units at $150
+        expected = 10 * 120  # 10 units from lot2 at $120 each = $1200
         assert abs(cost - expected) < 0.01
 
-        # Second lot should be consumed, first lot should have 40 left
+        # Lot2 should have 40 units left, lot1 intact
+        assert len(state.purchase_lots) == 2
+        assert abs(state.purchase_lots[0].units - 50) < 0.01
+        assert abs(state.purchase_lots[1].units - 40) < 0.01
+
+    def test_lifo_consumes_across_lots(self):
+        """LIFO: sell 9000 currency at price=150 → 60 units.
+        Lot1: 50 units @ $100, Lot2: 50 units @ $120.
+        LIFO: 50 from lot2 + 10 from lot1 → cost = 50*120 + 10*100 = 7000."""
+        state = BucketState(
+            name="Test", currency="USD", price=150, amount=15000,
+            initial_price=100, target_growth_pct=10, buy_sell_fee_pct=0,
+            cost_basis_method=CostBasisMethod.LIFO,
+        )
+        state.purchase_lots = [
+            PurchaseLot(price=100, units=50),
+            PurchaseLot(price=120, units=50),
+        ]
+
+        cost = _compute_cost_basis(state, 9000)  # 60 units at $150
+        expected = 50 * 120 + 10 * 100  # 6000 + 1000 = 7000
+        assert abs(cost - expected) < 0.01
         assert len(state.purchase_lots) == 1
-        assert abs(state.purchase_lots[0].amount - 40) < 0.01
+        assert abs(state.purchase_lots[0].units - 40) < 0.01
 
 
 class TestCostBasisAVCO:
     def test_avco_correct_gains(self):
+        """AVCO: sell 1500 at price=150 → 10 units.
+        Lots: 5000 at $100 (50 units) + 6000 at $120 (50 units).
+        Avg cost = (50*100 + 50*120)/100 = 110/unit.
+        Cost basis = 10 * 110 = 1100."""
         state = BucketState(
-            name="Test", currency="USD", price=150, amount=100,
+            name="Test", currency="USD", price=150, amount=15000,
             initial_price=100, target_growth_pct=10, buy_sell_fee_pct=0,
             cost_basis_method=CostBasisMethod.AVCO,
         )
-        # Simulate adding lots to compute avg_cost
-        _add_purchase_lot(state, 50, 100)
-        _add_purchase_lot(state, 50, 120)
+        _add_purchase_lot(state, 5000, 100)  # 50 units at $100
+        _add_purchase_lot(state, 6000, 120)  # 50 units at $120
 
-        cost = _compute_cost_basis(state, 60)
-        expected = 60
+        cost = _compute_cost_basis(state, 1500)  # 10 units at $150
+        expected = 10 * 110  # avg_cost = (50*100+50*120)/100 = 110
         assert abs(cost - expected) < 0.01
+
+    def test_avco_gain_is_nonzero(self):
+        """AVCO gain should reflect the difference between sell price and avg cost."""
+        state = BucketState(
+            name="Test", currency="USD", price=200, amount=10000,
+            initial_price=100, target_growth_pct=10, buy_sell_fee_pct=0,
+            cost_basis_method=CostBasisMethod.AVCO,
+        )
+        _add_purchase_lot(state, 10000, 100)  # 100 units at $100
+        # avg_cost = 100
+
+        sell_amount = 2000  # 10 units at $200
+        cost = _compute_cost_basis(state, sell_amount)
+        assert abs(cost - 1000) < 0.01  # 10 units * $100 avg cost
+        gain = sell_amount - cost
+        assert abs(gain - 1000) < 0.01  # $200-$100 per unit * 10 units
 
 
 class TestCrossCurrencyTrigger:

@@ -14,7 +14,7 @@ from engine.bucket import compute_sell, compute_buy
 class PurchaseLot:
     """A single purchase lot for FIFO/LIFO cost basis tracking."""
     price: float   # price per unit at purchase time
-    amount: float  # amount in bucket currency
+    units: float   # number of units purchased (= currency_amount / price)
 
 
 @dataclass
@@ -75,53 +75,67 @@ def get_conversion_fee_pct(bucket_currency: str, expenses_currency: str,
     return 0.0
 
 
-def _add_purchase_lot(state: BucketState, amount: float, price: float):
-    """Record a purchase lot and update AVCO."""
-    if amount <= 0:
+def _add_purchase_lot(state: BucketState, currency_amount: float, price: float):
+    """Record a purchase lot and update AVCO.
+
+    Args:
+        state: The bucket state to add the lot to.
+        currency_amount: Amount spent in bucket currency.
+        price: Price per unit at purchase time.
+    """
+    if currency_amount <= 0 or price <= 0:
         return
-    state.purchase_lots.append(PurchaseLot(price=price, amount=amount))
-    # Update AVCO
-    total_amount = sum(lot.amount for lot in state.purchase_lots)
-    if total_amount > 0:
-        total_cost = sum(lot.price * lot.amount for lot in state.purchase_lots)
-        state.avg_cost = total_cost / total_amount
+    units = currency_amount / price
+    state.purchase_lots.append(PurchaseLot(price=price, units=units))
+    # Update AVCO (weighted average cost per unit)
+    total_units = sum(lot.units for lot in state.purchase_lots)
+    if total_units > 0:
+        total_cost = sum(lot.price * lot.units for lot in state.purchase_lots)
+        state.avg_cost = total_cost / total_units
 
 
-def _compute_cost_basis(state: BucketState, sell_amount: float) -> float:
+def _compute_cost_basis(state: BucketState, sell_currency_amount: float) -> float:
     """Compute cost basis for a sell using the bucket's chosen method.
 
-    Returns total cost basis for the sold amount. Also consumes lots for FIFO/LIFO.
+    Converts the sell amount (in bucket currency) to units using the current price,
+    then computes cost basis from purchase lots.
+    Returns total cost basis in bucket currency. Also consumes lots for FIFO/LIFO.
     """
+    if state.price <= 0:
+        return sell_currency_amount  # safety fallback
+
+    sell_units = sell_currency_amount / state.price
+
     if state.cost_basis_method == CostBasisMethod.AVCO:
-        return min(sell_amount, state.amount)
+        return sell_units * state.avg_cost
 
     # FIFO or LIFO
-    remaining = sell_amount
+    remaining_units = sell_units
     cost_basis = 0.0
     if state.cost_basis_method == CostBasisMethod.FIFO:
         lots = state.purchase_lots  # consume from front
-        while remaining > 0 and lots:
+        while remaining_units > 1e-10 and lots:
             lot = lots[0]
-            take = min(remaining, lot.amount)
-            cost_basis += take
-            lot.amount -= take
-            remaining -= take
-            if lot.amount <= 0:
+            take_units = min(remaining_units, lot.units)
+            cost_basis += take_units * lot.price
+            lot.units -= take_units
+            remaining_units -= take_units
+            if lot.units <= 1e-10:
                 lots.pop(0)
     else:  # LIFO
         lots = state.purchase_lots  # consume from back
-        while remaining > 0 and lots:
+        while remaining_units > 1e-10 and lots:
             lot = lots[-1]
-            take = min(remaining, lot.amount)
-            cost_basis += take
-            lot.amount -= take
-            remaining -= take
-            if lot.amount <= 0:
+            take_units = min(remaining_units, lot.units)
+            cost_basis += take_units * lot.price
+            lot.units -= take_units
+            remaining_units -= take_units
+            if lot.units <= 1e-10:
                 lots.pop()
 
-    # If we ran out of lots, treat remaining amount as full-basis principal
-    if remaining > 0:
-        cost_basis += remaining
+    # If we ran out of lots, treat remaining as no-gain (cost = current price)
+    if remaining_units > 1e-10:
+        cost_basis += remaining_units * state.price
 
     return cost_basis
 
