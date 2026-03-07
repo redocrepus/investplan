@@ -77,9 +77,11 @@ def run_simulation(config: SimConfig, rng: np.random.Generator) -> pd.DataFrame:
         refill_target_months=config.cash_pool.refill_target_months,
         cash_floor_months=config.cash_pool.cash_floor_months,
     )
-    # Only use cash pool if it has a meaningful configuration
-    # (either has initial cash or has a refill target with buckets to sell from)
-    use_cash_pool = config.cash_pool.initial_amount > 0
+    # Use cash pool if it has meaningful configuration
+    use_cash_pool = (
+        config.cash_pool.initial_amount > 0
+        or config.cash_pool.refill_target_months > 0
+    )
 
     # Monthly simulation loop
     rows = []
