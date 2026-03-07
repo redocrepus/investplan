@@ -244,6 +244,28 @@ Critical fixes identified during financial review. Tests must be strengthened to
 - Gold σ=2.5%/mo (~8.7% annualized) — low vs historical ~12-15%
 - Bitcoin σ=15%/mo (~52% annualized) — slightly low vs historical ~60-80%
 
+### Stage 12 — Financial Review Fixes (immediate)
+
+**P0 — Critical calculation bugs:**
+- [ ] Fix bucket amount never revalued with price changes — `engine/simulator.py` updates `price` each month but never adjusts `amount` to reflect growth. All portfolio valuations, output columns, share% triggers, and cash runway calculations use stale cost-basis values instead of market value. Fix: `amount *= new_price / old_price` before rebalance each month.
+- [ ] Fix expense coverage ignores profitability ordering — `_cover_expenses_from_buckets()` in `engine/rebalancer.py` sorts by `spending_priority` only. Requirements mandate: sell most profitable first (by profitability descending), then unprofitable (by spending priority ascending). Mirror the approach used in `_refill_cash_pool()`.
+- [ ] Fix cash pool hard floor not enforced during expense draw — `execute_rebalance()` in `engine/rebalancer.py` draws `min(cash_pool.amount, month_expense)` with no floor check. The configured `cash_floor_months` is never applied. Fix: `drawable = max(0, cash_pool.amount - cash_floor_months * month_expense)`.
+
+**P1 — Trigger snapshot not implemented:**
+- [ ] Implement per-phase trigger snapshot — requirements state "All triggers are evaluated on a snapshot of portfolio state at the start of their phase (not re-evaluated after each execution within the same phase)." Currently triggers execute sequentially, each seeing mutated state from prior triggers. Fix: snapshot bucket amounts at phase start, use snapshot for condition evaluation, apply mutations to live state.
+
+**P2 — Minor financial modeling issues:**
+- [ ] Fix discount trigger uses `initial_price` instead of cost basis — `_execute_buy_trigger()` computes `target_price = buyer.initial_price * (1 + target_growth_pct / 100.0)`. Take Profit was fixed (Stage 9) to use `avg_cost`; Discount should be consistent.
+- [ ] Document share-exceeds single-pass approximation — selling to reduce share% doesn't account for portfolio shrinkage from the sell itself, causing systematic under-sell. Acceptable for simulation but should be documented.
+
+**Tests:**
+- [x] Add test verifying bucket amount reflects price growth each month (`test_bucket_amount_reflects_price_growth` — xfail)
+- [x] Add test verifying expense coverage sells most profitable bucket first (`test_sells_most_profitable_first_for_expenses` — xfail)
+- [x] Add test verifying cash pool floor is respected during expense draw (`test_cash_pool_floor_respected`, `test_cash_pool_floor_forces_bucket_fallthrough` — xfail)
+- [x] Add test verifying trigger snapshot isolation within a phase (`test_sell_trigger_condition_uses_snapshot`, `test_buy_trigger_condition_uses_snapshot` — xfail)
+- [x] Add test for discount trigger using cost basis instead of initial_price (`test_discount_uses_avg_cost` — xfail)
+- [ ] Update existing tests that may depend on the old (broken) amount tracking
+
 ### Stage 10 — Cash Pool & Trigger Period ✅
 
 Added a cash pool (expenses-currency cash reserve) and changed trigger frequency from `"monthly"/"yearly"` to `period_months: int`.

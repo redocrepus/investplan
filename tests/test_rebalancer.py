@@ -1,5 +1,6 @@
 """Tests for rebalancer engine — multi-trigger system, cost basis, cross-currency."""
 
+import pytest
 import numpy as np
 from engine.rebalancer import (
     BucketState, CashPoolState, PurchaseLot, execute_rebalance,
@@ -1271,3 +1272,282 @@ class TestMultiSourceBackwardCompat:
         b = loaded.buckets[0]
         assert len(b.triggers) == 1
         assert b.triggers[0].source_buckets == ["Cash", "Bonds"]
+
+
+# ---------------------------------------------------------------------------
+# Stage 12 — Tests for unfixed bugs (expected failures until bugs are fixed)
+# ---------------------------------------------------------------------------
+
+
+class TestExpenseCoverageProfitabilityOrdering:
+    """Stage 12 P0: Expense coverage should sell most profitable bucket first,
+    not just by spending priority order."""
+
+    @pytest.mark.xfail(reason="Stage 12 P0: expense coverage ignores profitability ordering")
+    def test_sells_most_profitable_first_for_expenses(self):
+        """When covering expenses, profitable buckets should be sold before
+        unprofitable ones, regardless of spending priority."""
+        # Profitable bucket (price doubled): spending_priority=1 (lower priority)
+        profitable = _make_state("Profitable", price=200, amount=20000,
+                                 initial_price=100, spending_priority=1)
+        # Unprofitable bucket (price halved): spending_priority=0 (higher priority)
+        unprofitable = _make_state("Unprofitable", price=50, amount=20000,
+                                   initial_price=100, spending_priority=0)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="Profitable", initial_price=100, initial_amount=20000,
+                                 growth_min_pct=-50, growth_max_pct=100, growth_avg_pct=10,
+                                 spending_priority=1),
+                InvestmentBucket(name="Unprofitable", initial_price=100, initial_amount=20000,
+                                 growth_min_pct=-50, growth_max_pct=100, growth_avg_pct=10,
+                                 spending_priority=0),
+            ],
+        )
+
+        execute_rebalance([profitable, unprofitable], 5000, {}, config, 0)
+
+        # Requirements: sell most profitable first for expense coverage
+        # Profitable (price doubled) should be sold before Unprofitable (price halved)
+        assert profitable.amount_sold > 0, "Profitable bucket should be sold first"
+        assert unprofitable.amount_sold == 0, "Unprofitable bucket should not be sold when profitable has funds"
+
+
+class TestCashPoolFloorDuringExpenseDraw:
+    """Stage 12 P0: Cash pool hard floor should be enforced when drawing expenses."""
+
+    @pytest.mark.xfail(reason="Stage 12 P0: cash pool floor not enforced during expense draw")
+    def test_cash_pool_floor_respected(self):
+        """Cash pool should not be drawn below cash_floor_months * monthly_expense.
+
+        When expenses exceed the drawable amount (above floor), the cash pool
+        should stop drawing at the floor and fall through to bucket selling.
+        """
+        sp500 = _make_state("SP500", price=100, amount=50000)
+        # Cash pool: 7000, floor = 6 months * 2000 = 12000
+        # Since 7000 < 12000 floor, NOTHING should be drawn from cash pool
+        cash_pool = CashPoolState(
+            amount=7000, refill_trigger_months=0, refill_target_months=0,
+            cash_floor_months=6,
+        )
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            cash_pool=CashPool(
+                initial_amount=7000, refill_trigger_months=0,
+                refill_target_months=0, cash_floor_months=6,
+            ),
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=50000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5),
+            ],
+        )
+
+        month_expense = 2000
+        execute_rebalance([sp500], month_expense, {}, config, 0, cash_pool=cash_pool)
+
+        # Floor = 6 * 2000 = 12000. Cash pool is only 7000, already below floor.
+        # No drawing should happen; cash pool should remain at 7000.
+        assert cash_pool.amount == 7000, \
+            f"Cash pool {cash_pool.amount} was drawn despite being below floor 12000"
+
+    @pytest.mark.xfail(reason="Stage 12 P0: cash pool floor not enforced during expense draw")
+    def test_cash_pool_floor_forces_bucket_fallthrough(self):
+        """When cash pool can't draw due to floor, expenses should come from buckets."""
+        sp500 = _make_state("SP500", price=100, amount=50000)
+        # Cash pool: 7000, floor = 6 months * 1000 = 6000, only 1000 drawable
+        cash_pool = CashPoolState(
+            amount=7000, refill_trigger_months=0, refill_target_months=0,
+            cash_floor_months=6,
+        )
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            cash_pool=CashPool(
+                initial_amount=7000, refill_trigger_months=0,
+                refill_target_months=0, cash_floor_months=6,
+            ),
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=50000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5),
+            ],
+        )
+
+        month_expense = 2000
+        total_covered = execute_rebalance([sp500], month_expense, {}, config, 0, cash_pool=cash_pool)
+
+        # Floor = 6000. Drawable = 7000 - 6000 = 1000. Remaining 1000 from bucket.
+        assert cash_pool.amount >= 5999, \
+            f"Cash pool {cash_pool.amount} fell below floor 6000"
+        assert sp500.amount_sold > 0, "Bucket should cover remainder"
+        assert total_covered == 2000
+
+
+class TestTriggerSnapshotIsolation:
+    """Stage 12 P1: Triggers within a phase should be evaluated on a snapshot
+    of portfolio state, not re-evaluated after each execution."""
+
+    @pytest.mark.xfail(reason="Stage 12 P1: trigger snapshot not implemented")
+    def test_sell_trigger_condition_uses_snapshot(self):
+        """A sell trigger should evaluate its condition based on the portfolio
+        snapshot at the start of the sell phase, not after prior triggers mutated state.
+
+        Setup: BucketA has take_profit trigger that sells to BucketB.
+        BucketB has share_exceeds 40% trigger that sells to Cash.
+        BucketB starts at 35% share — below the 40% threshold.
+
+        Without snapshot: BucketA fires first, adds proceeds to BucketB.
+        BucketB now exceeds 40%, so its trigger fires too (sees mutated state).
+
+        With snapshot: BucketB's share is evaluated on the original snapshot (35%),
+        so its trigger should NOT fire.
+        """
+        trigger_a = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.TAKE_PROFIT.value,
+            threshold_pct=100,
+            target_bucket="BucketB",
+        )
+        trigger_b = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.SHARE_EXCEEDS.value,
+            threshold_pct=40.0,
+            target_bucket="Cash",
+        )
+
+        # BucketA: price doubled, will trigger take profit
+        bucket_a = _make_state("BucketA", price=200, amount=30000,
+                               initial_price=100, target_growth_pct=10,
+                               triggers=[trigger_a])
+        # BucketB: 35000/100000 = 35%, below 40% threshold
+        bucket_b = _make_state("BucketB", price=100, amount=35000,
+                               initial_price=100, triggers=[trigger_b])
+        cash = _make_state("Cash", price=1, amount=35000)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="BucketA", initial_price=100, initial_amount=30000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="BucketB", initial_price=100, initial_amount=35000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="Cash", initial_price=1, initial_amount=35000,
+                                 growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0),
+            ],
+        )
+
+        execute_rebalance([bucket_a, bucket_b, cash], 0, {}, config, 0)
+
+        # BucketA should sell (take profit fires)
+        assert bucket_a.amount_sold > 0, "BucketA take_profit should fire"
+        # BucketB should NOT sell — its share was 35% at snapshot time (< 40%)
+        # Without snapshot, BucketA's proceeds push BucketB above 40%, causing it to fire
+        assert bucket_b.amount_sold == 0, \
+            f"BucketB sold {bucket_b.amount_sold} but should not (35% < 40% at snapshot)"
+
+    @pytest.mark.xfail(reason="Stage 12 P1: trigger snapshot not implemented")
+    def test_buy_trigger_condition_uses_snapshot(self):
+        """A buy trigger should evaluate its condition based on the portfolio
+        snapshot at the start of the buy phase, not after prior triggers mutated state.
+
+        Setup with high fees + tax: BucketA buys aggressively from Source,
+        causing portfolio total to shrink (fees/tax leak value out).
+        BucketB at borderline 9.5% share vs 10% threshold.
+
+        Without snapshot: after BucketA's large buy (with fees+tax shrinking
+        portfolio), BucketB's share rises above 10%, so trigger doesn't fire.
+
+        With snapshot: BucketB's share = 9.5% < 10%, trigger fires.
+        """
+        trigger_a = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=50.0,
+            source_buckets=["Source"],
+        )
+        trigger_b = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=10.0,
+            source_buckets=["Source"],
+        )
+
+        # Source has doubled in price (high gains → high tax on sell)
+        bucket_a = _make_state("BucketA", price=100, amount=5000, triggers=[trigger_a],
+                               buy_sell_fee_pct=5)
+        # BucketB: 9500/100000 = 9.5%, just below 10% threshold
+        bucket_b = _make_state("BucketB", price=100, amount=9500, triggers=[trigger_b],
+                               buy_sell_fee_pct=5)
+        source = _make_state("Source", price=200, amount=85500,
+                             initial_price=100, buy_sell_fee_pct=5)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=25,
+            buckets=[
+                InvestmentBucket(name="BucketA", initial_price=100, initial_amount=5000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=5),
+                InvestmentBucket(name="BucketB", initial_price=100, initial_amount=9500,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=5),
+                InvestmentBucket(name="Source", initial_price=100, initial_amount=85500,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=5),
+            ],
+        )
+
+        execute_rebalance([bucket_a, bucket_b, source], 0, {}, config, 0)
+
+        # With snapshot: BucketB share = 9.5% < 10% → trigger should fire
+        # Without snapshot: after BucketA's large buy with 5% fees + 25% cap gains
+        # tax, portfolio total shrinks significantly, pushing BucketB share above 10%
+        assert bucket_b.amount_bought > 0, \
+            "BucketB trigger should fire (9.5% < 10% at snapshot time)"
+
+
+class TestDiscountTriggerUsesCostBasis:
+    """Stage 12 P2: Discount trigger should use avg_cost (cost basis) instead
+    of initial_price for target_price calculation."""
+
+    @pytest.mark.xfail(reason="Stage 12 P2: discount trigger uses initial_price instead of cost basis")
+    def test_discount_uses_avg_cost(self):
+        """Discount trigger target_price should be based on avg_cost, not initial_price."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.DISCOUNT.value,
+            threshold_pct=5.0,
+            source_buckets=["Cash"],
+        )
+        # Initial price was 100, but we've been buying more at 150
+        # So avg_cost should be higher than initial_price
+        buyer = _make_state("SP500", price=120, amount=20000,
+                            initial_price=100, target_growth_pct=10,
+                            triggers=[trigger])
+        # Add another lot at price 150 to raise avg_cost
+        _add_purchase_lot(buyer, 10000, 150)
+        # avg_cost is now (100*100 + 66.67*150) / 166.67 ≈ 120
+
+        cash = _make_state("Cash", price=1, amount=50000)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=20000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
+                InvestmentBucket(name="Cash", initial_price=1, initial_amount=50000,
+                                 growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0),
+            ],
+        )
+
+        execute_rebalance([buyer, cash], 0, {}, config, 0)
+
+        # With avg_cost ≈ 120 and target_growth=10%: target_price ≈ 132
+        # Current price = 120: discount = (132/120 - 1)*100 = 10% > 5% threshold
+        # So trigger SHOULD fire when using avg_cost
+        #
+        # With initial_price=100 and target_growth=10%: target_price = 110
+        # Current price = 120: discount = (110/120 - 1)*100 = -8.3% (no discount)
+        # So trigger would NOT fire with initial_price (current behavior)
+        assert buyer.amount_bought > 0, \
+            "Discount trigger should fire when using avg_cost for target_price"
