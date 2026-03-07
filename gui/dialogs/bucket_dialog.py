@@ -282,8 +282,9 @@ class BucketDialog(QDialog):
         self._spending_priority = QSpinBox()
         self._spending_priority.setRange(0, 100)
         self._spending_priority.setToolTip(
-            "Lower number = sell first for expenses. All buckets are eligible "
-            "for selling to cover expenses, in this priority order."
+            "Order for selling to cover expenses when no profitable buckets remain. "
+            "Profitable buckets are always sold first (most profitable first). "
+            "Lower number = higher priority among unprofitable buckets."
         )
         exp_form.addRow("Spending Priority:", self._spending_priority)
 
