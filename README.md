@@ -12,7 +12,7 @@ Application for investment strategy planning and Monte Carlo simulation.
 - Monthly expense periods with inflation adjustment
 - Multi-currency support with FX simulation
 - Implicit share% floors/ceilings derived from triggers (share_below = floor, share_exceeds = ceiling)
-- Expense coverage via cash pool (when active) or spending priority cascade with cash floor guards and runaway protection
+- Expense coverage via cash pool (when active) or spending priority cascade with cash floor guards, runaway protection, and reverse-priority fallback when all buckets hit floor
 - Monte Carlo simulation with success rate and percentile statistics
 - Save/load configuration to JSON
 - Auto-save/restore last session on exit/launch

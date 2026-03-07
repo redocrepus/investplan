@@ -206,7 +206,7 @@ Replaced the single-trigger `RebalancingParams` model with a flexible multi-trig
 - [x] Add tests for cross-currency trigger rebalancing (fees, FX, tax)
 - [x] Verify save/load roundtrip with new trigger model
 
-### Stage 9 — Bug Fixes & Hardening
+### Stage 9 — Bug Fixes & Hardening ✅
 
 Critical fixes identified during financial review. Tests must be strengthened to assert correct values, not just non-zero output.
 

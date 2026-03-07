@@ -44,7 +44,8 @@ class TriggerDialog(QDialog):
         self._threshold.setRange(0.01, 10000)
         self._threshold.setDecimals(2)
         self._threshold.setToolTip(
-            "Threshold value. For Take Profit: ratio of actual/target growth. "
+            "Threshold value (%). For Take Profit: percentage of target growth "
+            "(e.g. 150 = fire when growth reaches 150% of target). "
             "For Share Exceeds/Below: portfolio share %. For Discount: discount %."
         )
         form.addRow("Threshold:", self._threshold)
