@@ -14,7 +14,7 @@ GUI: Excel like table where rows are months and columns are customizable financi
   - Expenses volatility during the period [constant(average), moderate, crazy]
 - Capital gain tax (in percent)
 - Sell proceeds formula (selectable; determines how gross proceeds, fees, and tax are computed for each sell). Initially only one formula is available: Israeli tax law.
-- [optional] Add special 1-time expense at month N of year K
+- [optional] Add special 1-time expense at month N of year K (inflation-adjusted to the target month)
 - Inflation
   - Expected min/max (in percent)
   - Expected average (in percent)

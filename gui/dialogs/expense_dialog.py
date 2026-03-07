@@ -99,7 +99,7 @@ class OneTimeExpenseDialog(QDialog):
         self._amount = QDoubleSpinBox()
         self._amount.setRange(0, 1e9)
         self._amount.setDecimals(2)
-        self._amount.setToolTip("Expense amount")
+        self._amount.setToolTip("Expense amount in today's money (automatically inflation-adjusted to the target month)")
         form.addRow("Amount:", self._amount)
 
         buttons = QDialogButtonBox(

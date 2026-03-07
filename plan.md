@@ -163,19 +163,18 @@ Findings from the second financial review (requirements → plan → implementat
 ### P1 — Bugs
 
 - [ ] **A. Expense coverage first pass ignores implicit share% floors** — `_cover_expenses_from_buckets` only respects `cash_floor_months`; it does not enforce the implicit share% floor from `share_below` triggers. Compare with `_available_to_sell()` which respects both. Requirements say expense coverage can violate these limits "as a last resort", implying the first pass (profitability-ordered) should respect them, with only the reverse-priority fallback violating them. Fix: use `_available_to_sell()` or replicate its dual-floor logic in the first pass.
-- [ ] **B. Multiple share-based triggers: only first threshold used** — `_get_share_floor` / `_get_share_ceiling` return the first matching trigger's threshold. If a bucket has multiple `share_below` triggers (e.g., 20% and 30%), only the first is used as the floor. Fix: use `max()` of all `share_below` thresholds for floor, `min()` of all `share_exceeds` thresholds for ceiling.
+- [ ] **B. Multiple share-based triggers allowed but only first used** — `_get_share_floor` / `_get_share_ceiling` return the first matching trigger's threshold, silently ignoring duplicates. Fix: validate in `InvestmentBucket` that at most one `share_below` buy trigger and one `share_exceeds` sell trigger exist per bucket. Reject duplicates at the model level.
 - [ ] **C. CashPool missing cross-field validation** — Requirements say `refill_target_months` must be >= `refill_trigger_months`. No validation exists; users can create nonsensical configs (e.g., trigger=24, target=12). Fix: add a `model_validator` to `CashPool`.
+- [ ] **D. Profitability ordering uses avg_cost for all cost basis methods** — `_bucket_profitability` always uses `avg_cost` regardless of FIFO/LIFO. For buckets with highly varied lot prices, the true profitability of the next units to sell can differ significantly. This is a bug: profitability must be consistent with the actual cost basis method used for taxation. Fix: compute profitability from the actual next-to-sell lots (front for FIFO, back for LIFO) instead of avg_cost.
 
 ### P2 — Design Concerns
 
-- [ ] **D. Profitability ordering uses avg_cost for all cost basis methods** — `_bucket_profitability` always uses `avg_cost` regardless of FIFO/LIFO. For buckets with highly varied lot prices, the true profitability of the next units to sell can differ significantly. Affects expense coverage, cash pool refill, and buy trigger source ordering. Consider computing profitability from the actual next-to-sell lots for FIFO/LIFO.
-- [ ] **E. Cross-currency routing always goes through expenses currency** — Sell trigger proceeds route seller→expenses→target currency, even when seller and target share the same foreign currency (e.g., both EUR). This double-charges FX conversion fees. Consider short-circuiting when seller and target currencies match.
-- [ ] **F. `_estimate_net_yield` floors at 1%** — `max(net_yield, 0.01)` prevents division-by-zero in gross-up calculations, but in extreme fee+tax scenarios actual yield could be below 1%, causing the gross-up to underestimate the sell amount needed. Consider lowering the floor or using an iterative approach.
+- [ ] **E. Cross-currency routing always goes through expenses currency** — Sell trigger proceeds route seller→expenses→target currency, even when seller and target share the same foreign currency (e.g., both EUR). This double-charges FX conversion fees. Fix: when seller and target currencies match, short-circuit the FX conversion — only convert to expenses currency the amount required to pay capital gains tax, then transfer the rest directly.
+- [ ] **F. `_estimate_net_yield` floors at 1%** — `max(net_yield, 0.01)` prevents division-by-zero in gross-up calculations, but in extreme fee+tax scenarios actual yield could be below 1%, causing the gross-up to underestimate the sell amount needed. Fix: remove the floor. Extract a `_gross_up(target_net, net_yield) -> float | None` helper that returns `None` when yield <= 0. Callers skip the source (continue to next bucket) when `None` is returned.
 
 ### P3 — Ambiguities / Documentation
 
-- [ ] **G. One-time expenses are inflation-adjusted without documentation** — `compute_monthly_expenses` applies cumulative inflation to one-time expenses. Requirements don't explicitly specify this. Document the behavior in tooltips and requirements, or make it configurable (nominal vs. real).
-- [ ] **H. Share-exceeds single-pass approximation** — Already documented in code and plan. No action needed beyond ensuring tests cover the under-sell behavior.
+- [x] **G. One-time expenses are inflation-adjusted without documentation** — `compute_monthly_expenses` applies cumulative inflation to one-time expenses. Requirements didn't explicitly specify this. Documented in requirements.md and GUI tooltip.
 
 ### Test Coverage Gaps
 
@@ -183,7 +182,7 @@ Findings from the second financial review (requirements → plan → implementat
 - [ ] Test: reverse-priority fallback activates when all buckets hit their cash floor
 - [ ] Test: cross-currency trigger execution between two non-expenses-currency buckets (double FX fee)
 - [ ] Test: `cash_pool.cash_floor_months` is respected when drawing expenses from cash pool
-- [ ] Test: bucket with multiple `share_below` or `share_exceeds` triggers (exposes bug B)
+- [ ] Test: model rejects bucket with multiple `share_below` or multiple `share_exceeds` triggers (validates fix B)
 - [ ] Test: `refill_target_months < refill_trigger_months` edge case (exposes bug C)
 - [ ] Test: profitability-ordered sell correctness when FIFO/LIFO cost basis differs significantly from AVCO
 
