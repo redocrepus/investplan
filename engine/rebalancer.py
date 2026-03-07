@@ -239,6 +239,30 @@ def _bucket_profitability(
     return gross_gain
 
 
+def _estimate_net_yield(
+    b: BucketState,
+    capital_gain_tax_pct: float,
+    expenses_currency: str,
+    config: SimConfig,
+) -> float:
+    """Estimate fraction of gross sell value (in expenses currency) that becomes net proceeds.
+
+    Used to gross up sell amounts so net proceeds cover the intended target.
+    """
+    fee_rate = b.buy_sell_fee_pct / 100.0
+    cost_per_unit = b.avg_cost if b.avg_cost > 0 else b.initial_price
+    if b.price > 0 and cost_per_unit > 0:
+        gain_fraction = max(0.0, (b.price - cost_per_unit) / b.price)
+    else:
+        gain_fraction = 0.0
+    tax_on_sell = capital_gain_tax_pct / 100.0 * gain_fraction * (1 - fee_rate)
+    conv_fee_rate = 0.0
+    if b.currency != expenses_currency:
+        conv_fee_rate = get_conversion_fee_pct(b.currency, expenses_currency, config) / 100.0
+    net_yield = (1 - fee_rate - tax_on_sell) * (1 - conv_fee_rate)
+    return max(net_yield, 0.01)
+
+
 def _execute_sell_trigger(
     trigger: BucketTrigger,
     seller: BucketState,
@@ -462,7 +486,10 @@ def _execute_buy_trigger(
         if unlimited_buy:
             sell_expenses = available
         else:
-            sell_expenses = min(remaining_need, available)
+            # Gross up to account for fee/tax/FX shrinkage
+            net_yield = _estimate_net_yield(source, capital_gain_tax_pct, expenses_currency, config)
+            gross_needed = remaining_need / net_yield
+            sell_expenses = min(gross_needed, available)
 
         sell_bucket_currency = sell_expenses / source_fx
 
@@ -570,7 +597,10 @@ def _refill_cash_pool(
         if available_expenses <= 0:
             continue
 
-        sell_expenses = min(needed, available_expenses)
+        # Gross up sell amount to account for fee/tax/FX shrinkage
+        net_yield = _estimate_net_yield(b, capital_gain_tax_pct, expenses_currency, config)
+        gross_needed = needed / net_yield
+        sell_expenses = min(gross_needed, available_expenses)
         sell_bucket_currency = sell_expenses / fx
 
         net_proceeds, fee = compute_sell(sell_bucket_currency, b.buy_sell_fee_pct)
@@ -628,7 +658,10 @@ def _cover_expenses_from_buckets(
         if available_expenses <= 0:
             continue
 
-        sell_expenses = min(remaining_expense, available_expenses)
+        # Gross up sell amount to account for fee/tax/FX shrinkage
+        net_yield = _estimate_net_yield(b, capital_gain_tax_pct, expenses_currency, config)
+        gross_needed = remaining_expense / net_yield
+        sell_expenses = min(gross_needed, available_expenses)
         sell_bucket_currency = sell_expenses / fx
 
         net_proceeds, fee = compute_sell(sell_bucket_currency, b.buy_sell_fee_pct)
@@ -649,7 +682,7 @@ def _cover_expenses_from_buckets(
         b.amount_sold += sell_bucket_currency
         b.fees_paid += fee * fx
         b.tax_paid += tax * fx
-        b.net_spent += net_in_expenses
+        b.net_spent += min(net_in_expenses, remaining_expense)
 
         remaining_expense -= net_in_expenses
 
@@ -670,7 +703,10 @@ def _cover_expenses_from_buckets(
             if bucket_value_expenses <= 0:
                 continue
 
-            sell_expenses = min(remaining_expense, bucket_value_expenses)
+            # Gross up for shrinkage (fallback still applies fees/tax)
+            net_yield = _estimate_net_yield(b, capital_gain_tax_pct, expenses_currency, config)
+            gross_needed = remaining_expense / net_yield
+            sell_expenses = min(gross_needed, bucket_value_expenses)
             sell_bucket_currency = sell_expenses / fx
 
             net_proceeds, fee = compute_sell(sell_bucket_currency, b.buy_sell_fee_pct)
@@ -691,7 +727,7 @@ def _cover_expenses_from_buckets(
             b.amount_sold += sell_bucket_currency
             b.fees_paid += fee * fx
             b.tax_paid += tax * fx
-            b.net_spent += net_in_expenses
+            b.net_spent += min(net_in_expenses, remaining_expense)
 
             remaining_expense -= net_in_expenses
 

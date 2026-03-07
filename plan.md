@@ -225,8 +225,8 @@ Critical fixes identified during financial review. Tests must be strengthened to
 - [x] Add test verifying inflation volatility range matches profile (`test_mild_volatility_std_matches_sigma`, `test_crazy_volatility_has_more_variation_than_mild`)
 
 **P2 — Logic fixes & financial modeling:**
-- [ ] Fix profitability ordering to use actual cost basis instead of `initial_price` in `engine/rebalancer.py:219` — `_bucket_profitability()` computes gain as `(price - initial_price) / initial_price`. After multiple buys/sells the effective cost basis diverges from initial_price, making "sell most profitable first" ordering inaccurate. Should use the bucket's cost basis (AVCO or lot-weighted average).
-- [ ] Fix sell amount calculation to account for fees/tax shrinkage — when calculating how much to sell to cover a target amount (expenses, cash pool refill, buy triggers), the code sells the face value needed but after sell fees, capital gains tax, and FX conversion fees the net proceeds are less. The shortfall is never recovered, creating systematic underfunding of ~2-5%.
+- [x] Fix profitability ordering to use actual cost basis (`avg_cost`) instead of `initial_price` in `_bucket_profitability()`.
+- [x] Fix sell amount calculation to account for fees/tax shrinkage — added `_estimate_net_yield()` to gross up sell amounts so net proceeds cover intended targets. Applied in expense coverage, cash pool refill, and buy trigger source sells.
 - [ ] Include cash pool in portfolio total for share% calculations in `engine/rebalancer.py:152-161` — `_portfolio_total_expenses_currency` only sums bucket values. If the cash pool holds a significant portion of wealth, share% triggers overstate each bucket's portfolio share, causing premature "share exceeds" sells and suppressing "share below" buys.
 - [ ] Fix yearly trigger month logic in `engine/rebalancer.py` — `month_idx % 12 != 0` fires in January; decide on correct month and document
 - [ ] Remove log-return clamping slack in `engine/bucket.py:39` — the `±0.01` slack on log-return bounds allows monthly returns to exceed the user's configured min/max growth range
