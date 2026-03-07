@@ -1283,7 +1283,6 @@ class TestExpenseCoverageProfitabilityOrdering:
     """Stage 12 P0: Expense coverage should sell most profitable bucket first,
     not just by spending priority order."""
 
-    @pytest.mark.xfail(reason="Stage 12 P0: expense coverage ignores profitability ordering")
     def test_sells_most_profitable_first_for_expenses(self):
         """When covering expenses, profitable buckets should be sold before
         unprofitable ones, regardless of spending priority."""
@@ -1317,7 +1316,6 @@ class TestExpenseCoverageProfitabilityOrdering:
 class TestCashPoolFloorDuringExpenseDraw:
     """Stage 12 P0: Cash pool hard floor should be enforced when drawing expenses."""
 
-    @pytest.mark.xfail(reason="Stage 12 P0: cash pool floor not enforced during expense draw")
     def test_cash_pool_floor_respected(self):
         """Cash pool should not be drawn below cash_floor_months * monthly_expense.
 
@@ -1352,7 +1350,6 @@ class TestCashPoolFloorDuringExpenseDraw:
         assert cash_pool.amount == 7000, \
             f"Cash pool {cash_pool.amount} was drawn despite being below floor 12000"
 
-    @pytest.mark.xfail(reason="Stage 12 P0: cash pool floor not enforced during expense draw")
     def test_cash_pool_floor_forces_bucket_fallthrough(self):
         """When cash pool can't draw due to floor, expenses should come from buckets."""
         sp500 = _make_state("SP500", price=100, amount=50000)
@@ -1388,7 +1385,6 @@ class TestTriggerSnapshotIsolation:
     """Stage 12 P1: Triggers within a phase should be evaluated on a snapshot
     of portfolio state, not re-evaluated after each execution."""
 
-    @pytest.mark.xfail(reason="Stage 12 P1: trigger snapshot not implemented")
     def test_sell_trigger_condition_uses_snapshot(self):
         """A sell trigger should evaluate its condition based on the portfolio
         snapshot at the start of the sell phase, not after prior triggers mutated state.
@@ -1446,7 +1442,6 @@ class TestTriggerSnapshotIsolation:
         assert bucket_b.amount_sold == 0, \
             f"BucketB sold {bucket_b.amount_sold} but should not (35% < 40% at snapshot)"
 
-    @pytest.mark.xfail(reason="Stage 12 P1: trigger snapshot not implemented")
     def test_buy_trigger_condition_uses_snapshot(self):
         """A buy trigger should evaluate its condition based on the portfolio
         snapshot at the start of the buy phase, not after prior triggers mutated state.
@@ -1510,7 +1505,6 @@ class TestDiscountTriggerUsesCostBasis:
     """Stage 12 P2: Discount trigger should use avg_cost (cost basis) instead
     of initial_price for target_price calculation."""
 
-    @pytest.mark.xfail(reason="Stage 12 P2: discount trigger uses initial_price instead of cost basis")
     def test_discount_uses_avg_cost(self):
         """Discount trigger target_price should be based on avg_cost, not initial_price."""
         trigger = BucketTrigger(
@@ -1519,21 +1513,21 @@ class TestDiscountTriggerUsesCostBasis:
             threshold_pct=5.0,
             source_buckets=["Cash"],
         )
-        # Initial price was 100, but we've been buying more at 150
-        # So avg_cost should be higher than initial_price
-        buyer = _make_state("SP500", price=120, amount=20000,
+        # Initial price was 100, but we've been buying more at higher prices.
+        # _make_state: 10000 currency at price 100 → 100 units at 100
+        # Then add lot: 30000 currency at price 200 → 150 units at 200
+        # avg_cost = (100*100 + 150*200) / 250 = 40000/250 = 160
+        buyer = _make_state("SP500", price=140, amount=10000,
                             initial_price=100, target_growth_pct=10,
                             triggers=[trigger])
-        # Add another lot at price 150 to raise avg_cost
-        _add_purchase_lot(buyer, 10000, 150)
-        # avg_cost is now (100*100 + 66.67*150) / 166.67 ≈ 120
+        _add_purchase_lot(buyer, 30000, 200)
 
         cash = _make_state("Cash", price=1, amount=50000)
 
         config = SimConfig(
             expenses_currency="USD", capital_gain_tax_pct=0,
             buckets=[
-                InvestmentBucket(name="SP500", initial_price=100, initial_amount=20000,
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=10000,
                                  growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10),
                 InvestmentBucket(name="Cash", initial_price=1, initial_amount=50000,
                                  growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0),
@@ -1542,12 +1536,12 @@ class TestDiscountTriggerUsesCostBasis:
 
         execute_rebalance([buyer, cash], 0, {}, config, 0)
 
-        # With avg_cost ≈ 120 and target_growth=10%: target_price ≈ 132
-        # Current price = 120: discount = (132/120 - 1)*100 = 10% > 5% threshold
+        # With avg_cost=160 and target_growth=10%: target_price = 176
+        # Current price = 140: discount = (176/140 - 1)*100 = 25.7% > 5% threshold
         # So trigger SHOULD fire when using avg_cost
         #
         # With initial_price=100 and target_growth=10%: target_price = 110
-        # Current price = 120: discount = (110/120 - 1)*100 = -8.3% (no discount)
-        # So trigger would NOT fire with initial_price (current behavior)
+        # Current price = 140: discount = (110/140 - 1)*100 = -21.4% (no discount)
+        # So trigger would NOT fire with initial_price
         assert buyer.amount_bought > 0, \
             "Discount trigger should fire when using avg_cost for target_price"

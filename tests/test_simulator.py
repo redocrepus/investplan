@@ -191,7 +191,6 @@ class TestRunSimulation:
         assert df["cash_pool_net_spent"].iloc[0] > 0, \
             "Expenses should be drawn from the cash pool"
 
-    @pytest.mark.xfail(reason="Stage 12 P0: bucket amount not revalued with price changes")
     def test_bucket_amount_reflects_price_growth(self):
         """Bucket amount should change as price changes (market value tracking).
 
