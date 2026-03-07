@@ -89,9 +89,13 @@ def run_simulation(config: SimConfig, rng: np.random.Generator) -> pd.DataFrame:
         year = m // 12 + 1
         month = m % 12 + 1
 
-        # Update bucket prices
+        # Update bucket prices and revalue amounts (market value tracking)
         for i, bucket in enumerate(config.buckets):
-            bucket_states[i].price = bucket_price_series[bucket.name][m]
+            new_price = bucket_price_series[bucket.name][m]
+            old_price = bucket_states[i].price
+            if old_price > 0:
+                bucket_states[i].amount *= new_price / old_price
+            bucket_states[i].price = new_price
 
         # Build current FX rates dict
         current_fx: dict[str, float] = {}

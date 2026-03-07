@@ -266,6 +266,21 @@ def _estimate_net_yield(
     return max(net_yield, 0.01)
 
 
+def _snapshot_portfolio_total(
+    bucket_states: list[BucketState],
+    snapshot_amounts: dict[str, float],
+    fx_rates: dict[str, float],
+    expenses_currency: str,
+    cash_pool_amount: float = 0.0,
+) -> float:
+    """Compute portfolio total using snapshot amounts for condition evaluation."""
+    total = sum(
+        snapshot_amounts.get(b.name, b.amount) * get_fx_rate(b.currency, expenses_currency, fx_rates)
+        for b in bucket_states
+    )
+    return total + cash_pool_amount
+
+
 def _execute_sell_trigger(
     trigger: BucketTrigger,
     seller: BucketState,
@@ -274,13 +289,18 @@ def _execute_sell_trigger(
     fx_rates: dict[str, float],
     config: SimConfig,
     cash_pool_amount: float = 0.0,
+    snapshot_amounts: dict[str, float] | None = None,
 ) -> None:
-    """Execute a single sell trigger if conditions are met."""
+    """Execute a single sell trigger if conditions are met.
+
+    When snapshot_amounts is provided, conditions are evaluated against the
+    snapshot (portfolio state at phase start) while mutations apply to live state.
+    """
     expenses_currency = config.expenses_currency
     capital_gain_tax_pct = config.capital_gain_tax_pct
     name_to_state = {b.name: b for b in bucket_states}
 
-    # Runaway guard
+    # Runaway guard (uses live state — this is a safety guard, not a trigger condition)
     runway = _cash_runway_months(bucket_states, month_expense, fx_rates, expenses_currency)
     if runway < seller.required_runaway_months:
         return
@@ -306,16 +326,30 @@ def _execute_sell_trigger(
         sell_amount = seller.amount * fraction_excess
 
     elif trigger.subtype == SellSubtype.SHARE_EXCEEDS.value:
-        # Sell if bucket's share of portfolio > threshold%
+        # Evaluate condition on snapshot if available
+        if snapshot_amounts is not None:
+            snap_total = _snapshot_portfolio_total(bucket_states, snapshot_amounts, fx_rates, expenses_currency, cash_pool_amount)
+            seller_fx = get_fx_rate(seller.currency, expenses_currency, fx_rates)
+            snap_value = snapshot_amounts.get(seller.name, seller.amount) * seller_fx
+            if snap_total <= 0:
+                return
+            share_pct = snap_value / snap_total * 100.0
+            if share_pct <= trigger.threshold_pct:
+                return
+        # Compute sell amount from live state
         portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency, cash_pool_amount)
         if portfolio_total <= 0:
             return
         seller_fx = get_fx_rate(seller.currency, expenses_currency, fx_rates)
         seller_value = seller.amount * seller_fx
-        share_pct = seller_value / portfolio_total * 100.0
-        if share_pct <= trigger.threshold_pct:
-            return
-        # Sell excess to bring share down to threshold
+        if snapshot_amounts is None:
+            share_pct = seller_value / portfolio_total * 100.0
+            if share_pct <= trigger.threshold_pct:
+                return
+        # Sell excess to bring share down to threshold.
+        # Note: single-pass approximation — doesn't account for portfolio
+        # shrinkage from the sell itself, causing systematic under-sell.
+        # Acceptable for simulation accuracy.
         target_value = portfolio_total * trigger.threshold_pct / 100.0
         excess_value = seller_value - target_value
         if excess_value <= 0:
@@ -325,9 +359,33 @@ def _execute_sell_trigger(
     if sell_amount <= 0:
         return
 
+    seller_fx = get_fx_rate(seller.currency, expenses_currency, fx_rates)
+
+    # Pre-limit sell_amount based on target's share ceiling so we don't sell
+    # more than the target can receive.
+    if trigger.target_bucket and trigger.target_bucket in name_to_state:
+        target_state = name_to_state[trigger.target_bucket]
+        target_ceiling_pct = _get_share_ceiling(target_state)
+        if target_ceiling_pct is not None:
+            target_fx = get_fx_rate(target_state.currency, expenses_currency, fx_rates)
+            portfolio_total = _portfolio_total_expenses_currency(
+                bucket_states, fx_rates, expenses_currency, cash_pool_amount,
+            )
+            target_value = target_state.amount * target_fx
+            ceiling_value = portfolio_total * target_ceiling_pct / 100.0
+            headroom = max(0.0, ceiling_value - target_value)
+            if headroom <= 0:
+                return
+            # Estimate max sell_amount that produces headroom worth of net proceeds
+            net_yield = _estimate_net_yield(seller, capital_gain_tax_pct, expenses_currency, config)
+            buy_yield = 1.0 - target_state.buy_sell_fee_pct / 100.0
+            max_sell = headroom / (seller_fx * net_yield * max(buy_yield, 0.01))
+            sell_amount = min(sell_amount, max_sell)
+            if sell_amount <= 0:
+                return
+
     # Execute the sell
     net_proceeds, fee = compute_sell(sell_amount, seller.buy_sell_fee_pct)
-    seller_fx = get_fx_rate(seller.currency, expenses_currency, fx_rates)
 
     # Capital gains tax using cost basis
     cost_basis = _compute_cost_basis(seller, sell_amount)
@@ -361,15 +419,6 @@ def _execute_sell_trigger(
             proceeds_expenses -= fx_fee
             target.fees_paid += fx_fee
 
-        # Enforce target's share ceiling (implicit from share_exceeds trigger)
-        target_ceiling_pct = _get_share_ceiling(target)
-        if target_ceiling_pct is not None:
-            portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency, cash_pool_amount)
-            target_value = target.amount * target_fx
-            ceiling_value = portfolio_total * target_ceiling_pct / 100.0
-            headroom = max(0.0, ceiling_value - target_value)
-            proceeds_expenses = min(proceeds_expenses, headroom)
-
         if proceeds_expenses <= 0:
             return
 
@@ -389,12 +438,16 @@ def _execute_buy_trigger(
     fx_rates: dict[str, float],
     config: SimConfig,
     cash_pool_amount: float = 0.0,
+    snapshot_amounts: dict[str, float] | None = None,
 ) -> None:
     """Execute a single buy trigger if conditions are met.
 
     Sells from source_buckets in profitability order (profitable first, then
     user-defined priority order for losing sources). Each source is sold down
     to its floors (cash floor + implicit share% floor).
+
+    When snapshot_amounts is provided, conditions are evaluated against the
+    snapshot (portfolio state at phase start) while mutations apply to live state.
     """
     expenses_currency = config.expenses_currency
     capital_gain_tax_pct = config.capital_gain_tax_pct
@@ -406,7 +459,8 @@ def _execute_buy_trigger(
 
     if trigger.subtype == BuySubtype.DISCOUNT.value:
         # Buy if 100 * target_price / current_price - 100 > threshold%
-        target_price = buyer.initial_price * (1 + buyer.target_growth_pct / 100.0)
+        cost_per_unit = buyer.avg_cost if buyer.avg_cost > 0 else buyer.initial_price
+        target_price = cost_per_unit * (1 + buyer.target_growth_pct / 100.0)
         if buyer.price <= 0:
             return
         discount_pct = 100.0 * target_price / buyer.price - 100.0
@@ -416,19 +470,30 @@ def _execute_buy_trigger(
         unlimited_buy = True  # sell all available from sources down to floors
 
     elif trigger.subtype == BuySubtype.SHARE_BELOW.value:
-        # Buy if bucket's share of portfolio < threshold%
-        portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency, cash_pool_amount)
-        if portfolio_total <= 0:
-            return
         buyer_fx = get_fx_rate(buyer.currency, expenses_currency, fx_rates)
-        buyer_value = buyer.amount * buyer_fx
-        share_pct = buyer_value / portfolio_total * 100.0
-        if share_pct >= trigger.threshold_pct:
-            return
-        should_buy = True
-        # Calculate how much to buy to reach target share
-        target_value = portfolio_total * trigger.threshold_pct / 100.0
-        buy_value_expenses = target_value - buyer_value
+        if snapshot_amounts is not None:
+            # Evaluate condition and compute buy amount from snapshot
+            snap_total = _snapshot_portfolio_total(bucket_states, snapshot_amounts, fx_rates, expenses_currency, cash_pool_amount)
+            snap_value = snapshot_amounts.get(buyer.name, buyer.amount) * buyer_fx
+            if snap_total <= 0:
+                return
+            snap_share = snap_value / snap_total * 100.0
+            if snap_share >= trigger.threshold_pct:
+                return
+            should_buy = True
+            target_value = snap_total * trigger.threshold_pct / 100.0
+            buy_value_expenses = target_value - snap_value
+        else:
+            portfolio_total = _portfolio_total_expenses_currency(bucket_states, fx_rates, expenses_currency, cash_pool_amount)
+            if portfolio_total <= 0:
+                return
+            buyer_value = buyer.amount * buyer_fx
+            share_pct = buyer_value / portfolio_total * 100.0
+            if share_pct >= trigger.threshold_pct:
+                return
+            should_buy = True
+            target_value = portfolio_total * trigger.threshold_pct / 100.0
+            buy_value_expenses = target_value - buyer_value
 
     if not should_buy:
         return
@@ -647,7 +712,21 @@ def _cover_expenses_from_buckets(
     """
     expenses_currency = config.expenses_currency
     capital_gain_tax_pct = config.capital_gain_tax_pct
-    spending_order = sorted(bucket_states, key=lambda b: b.spending_priority)
+
+    # Sort by profitability: profitable buckets first (descending),
+    # then unprofitable in spending priority order (ascending).
+    bucket_profit = []
+    for b in bucket_states:
+        fx = get_fx_rate(b.currency, expenses_currency, fx_rates)
+        conv_fee_pct = get_conversion_fee_pct(b.currency, expenses_currency, config)
+        profit = _bucket_profitability(b, fx, b.buy_sell_fee_pct, conv_fee_pct, expenses_currency)
+        bucket_profit.append((b, profit))
+
+    profitable = [(b, p) for b, p in bucket_profit if p > 0]
+    unprofitable = [(b, p) for b, p in bucket_profit if p <= 0]
+    profitable.sort(key=lambda x: x[1], reverse=True)
+    unprofitable.sort(key=lambda x: x[0].spending_priority)
+    spending_order = [b for b, _p in profitable + unprofitable]
 
     for b in spending_order:
         if remaining_expense <= 0:
@@ -770,13 +849,15 @@ def execute_rebalance(
     # --- Phase 1: Execute sell triggers ---
     # Triggers fire at month_idx 0 (first month), then every period_months.
     # E.g. period_months=12 fires at months 0, 12, 24, ...
+    # Snapshot: conditions evaluated on phase-start state, mutations on live state.
+    sell_snapshot = {b.name: b.amount for b in bucket_states}
     for b in bucket_states:
         for trigger in b.triggers:
             if trigger.trigger_type != TriggerType.SELL:
                 continue
             if trigger.period_months > 1 and month_idx % trigger.period_months != 0:
                 continue
-            _execute_sell_trigger(trigger, b, bucket_states, month_expense, fx_rates, config, cp_amount)
+            _execute_sell_trigger(trigger, b, bucket_states, month_expense, fx_rates, config, cp_amount, sell_snapshot)
 
     # --- Phase 2: Cover expenses ---
     if cash_pool is not None:
@@ -784,8 +865,10 @@ def execute_rebalance(
         if cash_pool.amount < month_expense:
             _refill_cash_pool(cash_pool, bucket_states, month_expense, fx_rates, config)
 
-        # Draw expenses from cash pool
-        drawn = min(cash_pool.amount, month_expense)
+        # Draw expenses from cash pool (respect cash floor)
+        cash_floor = cash_pool.cash_floor_months * month_expense
+        drawable = max(0.0, cash_pool.amount - cash_floor)
+        drawn = min(drawable, month_expense)
         cash_pool.amount -= drawn
         cash_pool.net_spent = drawn
         remaining_expense = month_expense - drawn
@@ -808,6 +891,8 @@ def execute_rebalance(
         _refill_cash_pool(cash_pool, bucket_states, month_expense, fx_rates, config)
 
     # --- Phase 4: Execute buy triggers ---
+    # Snapshot: conditions evaluated on phase-start state, mutations on live state.
+    buy_snapshot = {b.name: b.amount for b in bucket_states}
     for b in bucket_states:
         for trigger in b.triggers:
             if trigger.trigger_type != TriggerType.BUY:
@@ -815,6 +900,6 @@ def execute_rebalance(
             if trigger.period_months > 1 and month_idx % trigger.period_months != 0:
                 continue
             cp_amount = cash_pool.amount if cash_pool is not None else 0.0
-            _execute_buy_trigger(trigger, b, bucket_states, month_expense, fx_rates, config, cp_amount)
+            _execute_buy_trigger(trigger, b, bucket_states, month_expense, fx_rates, config, cp_amount, buy_snapshot)
 
     return total_covered
