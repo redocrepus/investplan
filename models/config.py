@@ -69,3 +69,22 @@ class SimConfig(BaseModel):
 
     buckets: list[InvestmentBucket] = Field(default_factory=list)
     currencies: list[CurrencySettings] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_trigger_bucket_references(self):
+        """Validate that all trigger target_bucket/source_buckets references resolve."""
+        bucket_names = {b.name for b in self.buckets}
+        for bucket in self.buckets:
+            for trigger in bucket.triggers:
+                if trigger.target_bucket and trigger.target_bucket not in bucket_names:
+                    raise ValueError(
+                        f"Bucket '{bucket.name}' trigger references unknown "
+                        f"target_bucket '{trigger.target_bucket}'"
+                    )
+                for src in trigger.source_buckets:
+                    if src not in bucket_names:
+                        raise ValueError(
+                            f"Bucket '{bucket.name}' trigger references unknown "
+                            f"source_bucket '{src}'"
+                        )
+        return self

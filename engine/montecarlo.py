@@ -48,9 +48,13 @@ def run_monte_carlo(
         all_total_net_spent.append(df["total_net_spent"].values)
         all_expenses.append(df["expenses"].values)
 
-        # Check success: net_spent covers expenses every month (with small tolerance)
-        shortfall = df["expenses"].values - df["total_net_spent"].values
-        if np.all(shortfall <= 0.01):  # small tolerance for floating point
+        # Check success: net_spent covers expenses every month (relative tolerance)
+        expenses_arr = df["expenses"].values
+        net_spent_arr = df["total_net_spent"].values
+        shortfall = expenses_arr - net_spent_arr
+        # Use 1% of monthly expenses as tolerance, with a minimum of 0.01
+        tolerance = np.maximum(0.01 * expenses_arr, 0.01)
+        if np.all(shortfall <= tolerance):
             success_count += 1
 
         if progress_callback:

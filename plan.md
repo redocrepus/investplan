@@ -184,45 +184,45 @@ Findings from the third financial review (requirements → plan → implementati
 
 ### P1 — Bugs
 
-1. [ ] **Take-profit trigger uses `avg_cost` regardless of cost basis method** — `_execute_sell_trigger` at `rebalancer.py:336-339` hardcodes `seller.avg_cost` for the growth calculation. FIFO buckets should use the oldest lot's price; LIFO should use the newest. Fix: replace with `_next_lot_cost_per_unit(seller)`, consistent with `_bucket_profitability` and `_estimate_net_yield`.
+1. [x] **Take-profit trigger uses `avg_cost` regardless of cost basis method** — `_execute_sell_trigger` at `rebalancer.py:336-339` hardcodes `seller.avg_cost` for the growth calculation. FIFO buckets should use the oldest lot's price; LIFO should use the newest. Fix: replace with `_next_lot_cost_per_unit(seller)`, consistent with `_bucket_profitability` and `_estimate_net_yield`.
 
-2. [ ] **AVCO `_compute_cost_basis` never consumes lots** — `rebalancer.py:109-110`: for AVCO, `_compute_cost_basis` returns `sell_units * avg_cost` but never removes/reduces units from `purchase_lots`. The lot list grows unboundedly with every buy, causing O(n²) degradation in `_add_purchase_lot` and potentially skewing `avg_cost`. Fix: after an AVCO sell, reduce lot units proportionally, or replace `purchase_lots` with a single synthetic lot at `avg_cost` for remaining units. Better: use incremental AVCO formula — on buy: `new_avg = (old_units * old_avg + new_units * price) / (old_units + new_units)`; on sell: `avg_cost` stays the same, only units decrease. Eliminates need to store individual lots for AVCO.
+2. [x] **AVCO `_compute_cost_basis` never consumes lots** — `rebalancer.py:109-110`: for AVCO, `_compute_cost_basis` returns `sell_units * avg_cost` but never removes/reduces units from `purchase_lots`. The lot list grows unboundedly with every buy, causing O(n²) degradation in `_add_purchase_lot` and potentially skewing `avg_cost`. Fix: after an AVCO sell, reduce lot units proportionally, or replace `purchase_lots` with a single synthetic lot at `avg_cost` for remaining units. Better: use incremental AVCO formula — on buy: `new_avg = (old_units * old_avg + new_units * price) / (old_units + new_units)`; on sell: `avg_cost` stays the same, only units decrease. Eliminates need to store individual lots for AVCO.
 
-3. [ ] **`_cover_expenses_from_buckets` doesn't pass `cash_pool_amount` to `_available_to_sell`** — `rebalancer.py:788`: share% floor calculation uses a portfolio total that excludes the cash pool, understating the floor and allowing over-selling. Fix: add `cash_pool_amount` parameter to `_cover_expenses_from_buckets` and pass it through from `execute_rebalance`.
+3. [x] **`_cover_expenses_from_buckets` doesn't pass `cash_pool_amount` to `_available_to_sell`** — `rebalancer.py:788`: share% floor calculation uses a portfolio total that excludes the cash pool, understating the floor and allowing over-selling. Fix: add `cash_pool_amount` parameter to `_cover_expenses_from_buckets` and pass it through from `execute_rebalance`.
 
-4. [ ] **Document that fees are tax-deductible (Israeli tax law)** — `rebalancer.py:417-418` (and 4 other identical patterns): `gain = net_proceeds - cost_basis` where `net_proceeds` is already after fees. Under Israeli tax law, brokerage fees are an allowable deduction from the gain, so the current code is correct. Fix: add comments at each tax computation site documenting this design choice.
+4. [x] **Document that fees are tax-deductible (Israeli tax law)** — `rebalancer.py:417-418` (and 4 other identical patterns): `gain = net_proceeds - cost_basis` where `net_proceeds` is already after fees. Under Israeli tax law, brokerage fees are an allowable deduction from the gain, so the current code is correct. Fix: add comments at each tax computation site documenting this design choice.
 
-5. [ ] **Pre-expense cash pool refill condition is too narrow** — `rebalancer.py:919`: checks `cash_pool.amount < month_expense` instead of `cash_pool.amount < cash_pool.refill_trigger_months * month_expense`. A pool at 3 months (above one month's expense but below trigger of 6 months) won't be refilled before drawing. Fix: change condition to `cash_pool.amount < cash_pool.refill_trigger_months * month_expense`.
+5. [x] **Pre-expense cash pool refill condition is too narrow** — `rebalancer.py:919`: checks `cash_pool.amount < month_expense` instead of `cash_pool.amount < cash_pool.refill_trigger_months * month_expense`. A pool at 3 months (above one month's expense but below trigger of 6 months) won't be refilled before drawing. Fix: change condition to `cash_pool.amount < cash_pool.refill_trigger_months * month_expense`.
 
-6. [ ] **Cross-currency cost basis ignores FX gains for tax purposes** — `rebalancer.py:278-283`: requirements say "cost basis is always tracked in the expenses currency," but lots store prices in bucket currency. FX gains/losses on the position are not captured in taxable gain calculations. Fix: `_add_purchase_lot` should store cost in expenses currency (price × FX rate at purchase time). `_compute_cost_basis` should return cost basis in expenses currency. Gain computation should be `sell_proceeds_in_expenses_currency - cost_basis_in_expenses_currency`. Requires threading FX rate into `_add_purchase_lot`.
+6. [x] **Cross-currency cost basis ignores FX gains for tax purposes** — `rebalancer.py:278-283`: requirements say "cost basis is always tracked in the expenses currency," but lots store prices in bucket currency. FX gains/losses on the position are not captured in taxable gain calculations. Fix: `_add_purchase_lot` should store cost in expenses currency (price × FX rate at purchase time). `_compute_cost_basis` should return cost basis in expenses currency. Gain computation should be `sell_proceeds_in_expenses_currency - cost_basis_in_expenses_currency`. Requires threading FX rate into `_add_purchase_lot`.
 
 ### P2 — Design Concerns
 
-7. [ ] **AVCO avg_cost recomputation is O(n) per buy** — `rebalancer.py:91-94`: `_add_purchase_lot` iterates all lots on every add. Fix: use incremental formula (addressed by fix 2 above).
+7. [x] **AVCO avg_cost recomputation is O(n) per buy** — `rebalancer.py:91-94`: `_add_purchase_lot` iterates all lots on every add. Fix: use incremental formula (addressed by fix 2 above).
 
-8. [ ] **Cumulative inflation starts from month 0 instead of being neutral** — `expenses.py:45`: `cum_inflation[0] = 1 + rate[0]` means first month's expenses are already inflated. Fix: initialize `cum_inflation[0] = 1.0` and start compounding from month 1.
+8. [x] **Cumulative inflation starts from month 0 instead of being neutral** — `expenses.py:45`: `cum_inflation[0] = 1 + rate[0]` means first month's expenses are already inflated. Fix: initialize `cum_inflation[0] = 1.0` and start compounding from month 1.
 
-9. [ ] **Monte Carlo success tolerance is absolute ($0.01)** — `montecarlo.py`: `shortfall <= 0.01` doesn't scale with expense amounts. Fix: use relative tolerance `shortfall <= 0.01 * expenses[m]` or similar.
+9. [x] **Monte Carlo success tolerance is absolute ($0.01)** — `montecarlo.py`: `shortfall <= 0.01` doesn't scale with expense amounts. Fix: use relative tolerance `shortfall <= 0.01 * expenses[m]` or similar.
 
-10. [ ] **`cp_amount` snapshot becomes stale within a month** — `rebalancer.py:901`: `cp_amount` is set at Phase 1 start and not updated as the cash pool changes during Phase 2. Sell trigger ceiling calculations and buy trigger share% calculations may use a stale cash pool value. Fix: update `cp_amount` before each phase that uses it.
+10. [x] **`cp_amount` snapshot becomes stale within a month** — `rebalancer.py:901`: `cp_amount` is set at Phase 1 start and not updated as the cash pool changes during Phase 2. Sell trigger ceiling calculations and buy trigger share% calculations may use a stale cash pool value. Fix: update `cp_amount` before each phase that uses it.
 
-11. [ ] **No validation that trigger `target_bucket`/`source_buckets` references exist in config** — `models/bucket.py:40-61`: invalid references are silently ignored at runtime. Fix: add a `model_validator` on `SimConfig` that checks all trigger bucket references resolve to actual bucket names.
+11. [x] **No validation that trigger `target_bucket`/`source_buckets` references exist in config** — `models/bucket.py:40-61`: invalid references are silently ignored at runtime. Fix: add a `model_validator` on `SimConfig` that checks all trigger bucket references resolve to actual bucket names.
 
-12. [ ] **`avg_cost` initialized to 0.0; fragile fallback chain** — `rebalancer.py:231-238`: zero-initial-amount buckets have `avg_cost=0` and empty lots. The fallback to `initial_price` works but is fragile. Fix: initialize `avg_cost = initial_price` in `_init_bucket_state`.
+12. [x] **`avg_cost` initialized to 0.0; fragile fallback chain** — `rebalancer.py:231-238`: zero-initial-amount buckets have `avg_cost=0` and empty lots. The fallback to `initial_price` works but is fragile. Fix: initialize `avg_cost = initial_price` in `_init_bucket_state`.
 
 ### P3 — Test Coverage Gaps
 
-13. [ ] **AVCO lot accumulation after multiple sell/buy cycles** — Verify lot list is properly maintained and `avg_cost` stays correct after several alternating buys and sells under AVCO.
-14. [ ] **Take-profit trigger with FIFO/LIFO cost basis** — Create a FIFO bucket with multiple lots at different prices and verify trigger fires at the correct threshold based on oldest lot, not average.
-15. [ ] **Cross-currency cost basis and FX-adjusted tax calculation** — Verify that FX gains embedded in a cross-currency position are correctly taxed.
-16. [ ] **Pre-expense refill when pool is above expenses but below trigger** — Exercise scenario where cash pool is between one month's expenses and the refill trigger level.
-17. [ ] **Share% floors with active cash pool (portfolio total correctness)** — Verify floor calculation includes cash pool in portfolio total.
-18. [ ] **Near-zero bucket price edge cases** — Test `_compute_cost_basis` and expense coverage when a bucket's price reaches the 0.001 floor.
-19. [ ] **Expense period boundary conditions** — Test: period starting in last simulation month, two periods with same start month, period starting before simulation.
-20. [ ] **Reverse-priority fallback with capital gains tax gross-up** — Verify that gross-up correctly covers expenses after tax in the fallback path.
-21. [ ] **Full multi-year integration test** — Run a 10-year simulation with inflation, multiple buckets, cross-currency, triggers all active. Validate: no negative amounts, total fees < total sold, total covered ≤ total drawn.
-22. [ ] **`use_cash_pool` disabled when both initial_amount=0 and refill_target=0** — Assert cash pool columns remain zero throughout.
-23. [ ] **Stateful multi-month trigger with `period_months=1`** — Verify trigger fires every month with persistent state changes between months.
+13. [x] **AVCO lot accumulation after multiple sell/buy cycles** — Verify lot list is properly maintained and `avg_cost` stays correct after several alternating buys and sells under AVCO.
+14. [x] **Take-profit trigger with FIFO/LIFO cost basis** — Create a FIFO bucket with multiple lots at different prices and verify trigger fires at the correct threshold based on oldest lot, not average.
+15. [x] **Cross-currency cost basis and FX-adjusted tax calculation** — Verify that FX gains embedded in a cross-currency position are correctly taxed.
+16. [x] **Pre-expense refill when pool is above expenses but below trigger** — Exercise scenario where cash pool is between one month's expenses and the refill trigger level.
+17. [x] **Share% floors with active cash pool (portfolio total correctness)** — Verify floor calculation includes cash pool in portfolio total.
+18. [x] **Near-zero bucket price edge cases** — Test `_compute_cost_basis` and expense coverage when a bucket's price reaches the 0.001 floor.
+19. [x] **Expense period boundary conditions** — Test: period starting in last simulation month, two periods with same start month, period starting before simulation.
+20. [x] **Reverse-priority fallback with capital gains tax gross-up** — Verify that gross-up correctly covers expenses after tax in the fallback path.
+21. [x] **Full multi-year integration test** — Run a 10-year simulation with inflation, multiple buckets, cross-currency, triggers all active. Validate: no negative amounts, total fees < total sold, total covered ≤ total drawn.
+22. [x] **`use_cash_pool` disabled when both initial_amount=0 and refill_target=0** — Assert cash pool columns remain zero throughout.
+23. [x] **Stateful multi-month trigger with `period_months=1`** — Verify trigger fires every month with persistent state changes between months.
 
 ---
 

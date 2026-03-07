@@ -14,8 +14,13 @@ from engine.rebalancer import (
 )
 
 
-def _init_bucket_state(bucket: InvestmentBucket) -> BucketState:
-    """Create a BucketState from a bucket model."""
+def _init_bucket_state(bucket: InvestmentBucket, initial_fx_rate: float = 1.0) -> BucketState:
+    """Create a BucketState from a bucket model.
+
+    Args:
+        bucket: The bucket model.
+        initial_fx_rate: FX rate from bucket currency to expenses currency at sim start.
+    """
     state = BucketState(
         name=bucket.name,
         currency=bucket.currency,
@@ -29,9 +34,10 @@ def _init_bucket_state(bucket: InvestmentBucket) -> BucketState:
         required_runaway_months=bucket.required_runaway_months,
         triggers=list(bucket.triggers),
         cost_basis_method=bucket.cost_basis_method,
+        avg_cost=bucket.initial_price * initial_fx_rate,
     )
-    # Initialize with one lot at initial price
-    _add_purchase_lot(state, bucket.initial_amount, bucket.initial_price)
+    # Initialize with one lot at initial price (cost basis in expenses currency)
+    _add_purchase_lot(state, bucket.initial_amount, bucket.initial_price, initial_fx_rate)
     return state
 
 
@@ -64,10 +70,16 @@ def run_simulation(config: SimConfig, rng: np.random.Generator) -> pd.DataFrame:
         inflation_rates, n_months, rng,
     )
 
+    # Build initial FX rates (from currency settings initial prices)
+    initial_fx: dict[str, float] = {}
+    for cs in config.currencies:
+        initial_fx[cs.code] = cs.initial_price
+
     # Initialize bucket states
     bucket_states = []
     for bucket in config.buckets:
-        state = _init_bucket_state(bucket)
+        fx = initial_fx.get(bucket.currency, 1.0) if bucket.currency != config.expenses_currency else 1.0
+        state = _init_bucket_state(bucket, fx)
         bucket_states.append(state)
 
     # Initialize cash pool

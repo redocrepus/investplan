@@ -380,7 +380,7 @@ class TestZeroPrice:
             initial_price=100, target_growth_pct=10, buy_sell_fee_pct=0,
             cost_basis_method=CostBasisMethod.FIFO,
         )
-        state.purchase_lots = [PurchaseLot(price=100, units=50)]
+        state.purchase_lots = [PurchaseLot(price_exp=100, units=50)]
 
         cost = _compute_cost_basis(state, 1000)
         # Safety fallback: when price <= 0, return sell_currency_amount

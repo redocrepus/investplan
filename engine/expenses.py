@@ -38,13 +38,10 @@ def compute_monthly_expenses(
         for m in range(max(0, start_idx), min(n_months, end_idx)):
             period_for_month[m] = period
 
-    # Cumulative inflation factor
+    # Cumulative inflation factor (month 0 is neutral — no inflation applied yet)
     cum_inflation = np.ones(n_months)
-    for i in range(n_months):
-        if i == 0:
-            cum_inflation[i] = 1.0 + inflation_rates[i]
-        else:
-            cum_inflation[i] = cum_inflation[i - 1] * (1.0 + inflation_rates[i])
+    for i in range(1, n_months):
+        cum_inflation[i] = cum_inflation[i - 1] * (1.0 + inflation_rates[i])
 
     # Generate base expenses for each month
     for m in range(n_months):

@@ -13,9 +13,9 @@ GUI: Excel like table where rows are months and columns are customizable financi
   - average amount
   - Expenses volatility during the period [constant(average), moderate, crazy]
 - Capital gain tax (in percent)
-- Sell proceeds formula (selectable; determines how gross proceeds, fees, and tax are computed for each sell). Initially only one formula is available: Israeli tax law.
+- Sell proceeds formula (selectable; determines how gross proceeds, fees, and tax are computed for each sell). Initially only one formula is available: Israeli tax law. Under Israeli tax law, brokerage fees are an allowable deduction from capital gains (fees are deducted before computing taxable gain).
 - [optional] Add special 1-time expense at month N of year K (inflation-adjusted to the target month)
-- Inflation
+- Inflation (month 0 is neutral — no inflation applied; compounding starts from month 1)
   - Expected min/max (in percent)
   - Expected average (in percent)
   - Volatility [constant(average), mild, crazy]
@@ -29,7 +29,7 @@ GUI: Excel like table where rows are months and columns are customizable financi
   - Volatility profile [const(average), gov-bonds, s&p500, gold, bitcoin]
   - Buy/Sell fee (in percent)
   - Capital gains cost basis method: FIFO (default), LIFO, or AVCO. Cost basis is always tracked in the expenses currency.
-  - Target growth (in percent). Used by Take Profit triggers: `actual_growth%` is defined as `(current_price - cost_basis_per_unit) / cost_basis_per_unit * 100`, where `cost_basis_per_unit` is determined by the bucket's chosen cost basis method (FIFO/LIFO/AVCO).
+  - Target growth (in percent). Used by Take Profit triggers: `actual_growth%` is defined as `(current_price_exp - cost_basis_per_unit_exp) / cost_basis_per_unit_exp * 100`, where both values are in expenses currency. `cost_basis_per_unit_exp` is determined by the bucket's chosen cost basis method (FIFO/LIFO/AVCO) and captures FX rates at purchase time. For cross-currency buckets, FX gains/losses are included in the growth calculation.
   - Spending priority (allow visually ordering the buckets in order of selling first to cover expenses). All buckets are subject to selling if needed to cover expenses, in order of spending priority.
   - Cash floor (in months of expenses calculated after converted to expenses currency): When selling (including for expenses coverage), keep at least this amount in the bucket if possible (to avoid selling other assets a market crash when the price is low).
 

@@ -64,11 +64,13 @@ class TestComputeMonthlyExpenses:
         inflation = np.full(12, 0.01)
         rng = np.random.default_rng(42)
         expenses = compute_monthly_expenses(periods, [], inflation, 12, rng)
-        # Each month should be higher than the last
-        for i in range(1, 12):
+        # Each month should be higher than the last (starting from month 1)
+        for i in range(2, 12):
             assert expenses[i] > expenses[i - 1]
-        # First month: 1000 * 1.01 = 1010
-        assert abs(expenses[0] - 1010) < 1
+        # First month: 1000 * 1.0 = 1000 (month 0 is neutral — no inflation yet)
+        assert abs(expenses[0] - 1000) < 1
+        # Second month: 1000 * 1.01 = 1010
+        assert abs(expenses[1] - 1010) < 1
 
     def test_no_periods_no_expenses(self):
         inflation = np.zeros(12)
