@@ -112,6 +112,7 @@ class TestRunSimulation:
             ),
             cash_pool=CashPool(
                 initial_amount=100000,
+                refill_trigger_months=6,
                 refill_target_months=12,
                 cash_floor_months=0,
             ),

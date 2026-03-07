@@ -8,17 +8,25 @@ from models.bucket import InvestmentBucket
 
 
 class CashPool(BaseModel):
-    """Cash reserve in expenses currency. Expenses are drawn from here;
-    investment buckets auto-refill it when it drops below the target."""
+    """Cash reserve in expenses currency. All expenses are drawn from here;
+    investment buckets auto-refill it when it drops below the trigger level."""
     initial_amount: float = 0.0           # starting cash in expenses currency
-    refill_target_months: float = 24.0    # auto-refill when below this many months of expenses
-    cash_floor_months: float = 12.0       # hard floor for the cash pool itself
+    refill_trigger_months: float = 12.0   # start refilling when below this many months of expenses
+    refill_target_months: float = 24.0    # refill up to this many months of expenses
+    cash_floor_months: float = 6.0        # hard floor for the cash pool itself
 
     @field_validator("initial_amount")
     @classmethod
     def _initial_amount_non_negative(cls, v):
         if v < 0:
             raise ValueError("initial_amount must be >= 0")
+        return v
+
+    @field_validator("refill_trigger_months")
+    @classmethod
+    def _refill_trigger_non_negative(cls, v):
+        if v < 0:
+            raise ValueError("refill_trigger_months must be >= 0")
         return v
 
     @field_validator("refill_target_months")
@@ -40,7 +48,6 @@ class SimConfig(BaseModel):
     """Complete simulation configuration aggregating all parameters."""
     period_years: int = 10
     expenses_currency: str = "USD"
-    hedge_amount: float = 0.0          # total hedge in expenses currency
     capital_gain_tax_pct: float = 25.0  # capital gains tax percentage
 
     inflation: InflationSettings = InflationSettings(

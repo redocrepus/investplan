@@ -1,4 +1,4 @@
-"""Global settings panel — period, currency, tax, hedge, inflation, cash pool."""
+"""Global settings panel — period, currency, tax, inflation, cash pool."""
 
 from PyQt6.QtWidgets import (
     QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox, QComboBox, QVBoxLayout,
@@ -29,12 +29,6 @@ class GlobalPanel(QGroupBox):
         self._currency.addItems(COMMON_CURRENCIES)
         self._currency.setToolTip("Currency used for expenses and reporting")
         form.addRow("Expenses Currency:", self._currency)
-
-        self._hedge = QDoubleSpinBox()
-        self._hedge.setRange(0, 1e9)
-        self._hedge.setDecimals(2)
-        self._hedge.setToolTip("Total hedge amount in expenses currency")
-        form.addRow("Hedge Amount:", self._hedge)
 
         self._tax = QDoubleSpinBox()
         self._tax.setRange(0, 100)
@@ -82,15 +76,25 @@ class GlobalPanel(QGroupBox):
         self._cp_initial = QDoubleSpinBox()
         self._cp_initial.setRange(0, 1e9)
         self._cp_initial.setDecimals(2)
-        self._cp_initial.setToolTip("Starting cash reserve in expenses currency. Expenses are drawn from here.")
+        self._cp_initial.setToolTip("Starting cash reserve in expenses currency. All expenses are drawn from here.")
         cp_form.addRow("Initial Amount:", self._cp_initial)
+
+        self._cp_refill_trigger = QDoubleSpinBox()
+        self._cp_refill_trigger.setRange(0, 120)
+        self._cp_refill_trigger.setDecimals(1)
+        self._cp_refill_trigger.setSuffix(" months")
+        self._cp_refill_trigger.setToolTip(
+            "Start refilling the cash pool when it drops below this many months of expenses. "
+            "Must be <= Refill Target."
+        )
+        cp_form.addRow("Refill Trigger:", self._cp_refill_trigger)
 
         self._cp_refill_target = QDoubleSpinBox()
         self._cp_refill_target.setRange(0, 120)
         self._cp_refill_target.setDecimals(1)
         self._cp_refill_target.setSuffix(" months")
         self._cp_refill_target.setToolTip(
-            "Auto-refill the cash pool when it drops below this many months of expenses. "
+            "Refill the cash pool up to this many months of expenses. "
             "Buckets are sold in order of highest profitability to refill."
         )
         cp_form.addRow("Refill Target:", self._cp_refill_target)
@@ -99,15 +103,18 @@ class GlobalPanel(QGroupBox):
         self._cp_floor.setRange(0, 120)
         self._cp_floor.setDecimals(1)
         self._cp_floor.setSuffix(" months")
-        self._cp_floor.setToolTip("Hard floor for the cash pool in months of expenses")
+        self._cp_floor.setToolTip(
+            "Hard floor for the cash pool in months of current expenses. "
+            "Recalculated monthly using inflation-adjusted expenses."
+        )
         cp_form.addRow("Cash Floor:", self._cp_floor)
 
         layout.addWidget(cp_group)
 
         # Connect signals
-        for w in (self._period, self._hedge, self._tax,
+        for w in (self._period, self._tax,
                   self._inf_min, self._inf_max, self._inf_avg,
-                  self._cp_initial, self._cp_refill_target, self._cp_floor):
+                  self._cp_initial, self._cp_refill_trigger, self._cp_refill_target, self._cp_floor):
             w.valueChanged.connect(self.changed.emit)
         for w in (self._currency, self._inf_vol):
             w.currentTextChanged.connect(lambda _: self.changed.emit())
@@ -119,7 +126,6 @@ class GlobalPanel(QGroupBox):
         idx = self._currency.findText(config.expenses_currency)
         if idx >= 0:
             self._currency.setCurrentIndex(idx)
-        self._hedge.setValue(config.hedge_amount)
         self._tax.setValue(config.capital_gain_tax_pct)
         self._inf_min.setValue(config.inflation.min_pct)
         self._inf_max.setValue(config.inflation.max_pct)
@@ -128,13 +134,13 @@ class GlobalPanel(QGroupBox):
         if idx >= 0:
             self._inf_vol.setCurrentIndex(idx)
         self._cp_initial.setValue(config.cash_pool.initial_amount)
+        self._cp_refill_trigger.setValue(config.cash_pool.refill_trigger_months)
         self._cp_refill_target.setValue(config.cash_pool.refill_target_months)
         self._cp_floor.setValue(config.cash_pool.cash_floor_months)
 
     def write_to_config(self, config: SimConfig):
         config.period_years = self._period.value()
         config.expenses_currency = self._currency.currentText()
-        config.hedge_amount = self._hedge.value()
         config.capital_gain_tax_pct = self._tax.value()
         config.inflation = InflationSettings(
             min_pct=self._inf_min.value(),
@@ -144,6 +150,7 @@ class GlobalPanel(QGroupBox):
         )
         config.cash_pool = CashPool(
             initial_amount=self._cp_initial.value(),
+            refill_trigger_months=self._cp_refill_trigger.value(),
             refill_target_months=self._cp_refill_target.value(),
             cash_floor_months=self._cp_floor.value(),
         )

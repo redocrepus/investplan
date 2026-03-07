@@ -73,6 +73,7 @@ def run_simulation(config: SimConfig, rng: np.random.Generator) -> pd.DataFrame:
     # Initialize cash pool
     cash_pool = CashPoolState(
         amount=config.cash_pool.initial_amount,
+        refill_trigger_months=config.cash_pool.refill_trigger_months,
         refill_target_months=config.cash_pool.refill_target_months,
         cash_floor_months=config.cash_pool.cash_floor_months,
     )
