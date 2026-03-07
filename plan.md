@@ -176,16 +176,6 @@ Findings from the second financial review (requirements → plan → implementat
 
 - [x] **G. One-time expenses are inflation-adjusted without documentation** — `compute_monthly_expenses` applies cumulative inflation to one-time expenses. Requirements didn't explicitly specify this. Documented in requirements.md and GUI tooltip.
 
-### Test Coverage Gaps
-
-- [ ] Test: expense coverage first pass respects (or intentionally ignores) implicit share% floors
-- [ ] Test: reverse-priority fallback activates when all buckets hit their cash floor
-- [ ] Test: cross-currency trigger execution between two non-expenses-currency buckets (double FX fee)
-- [ ] Test: `cash_pool.cash_floor_months` is respected when drawing expenses from cash pool
-- [ ] Test: model rejects bucket with multiple `share_below` or multiple `share_exceeds` triggers (validates fix B)
-- [ ] Test: `refill_target_months < refill_trigger_months` edge case (exposes bug C)
-- [ ] Test: profitability-ordered sell correctness when FIFO/LIFO cost basis differs significantly from AVCO
-
 ---
 
 ## Future Plans

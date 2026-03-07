@@ -1545,3 +1545,388 @@ class TestDiscountTriggerUsesCostBasis:
         # So trigger would NOT fire with initial_price
         assert buyer.amount_bought > 0, \
             "Discount trigger should fire when using avg_cost for target_price"
+
+
+# ---------------------------------------------------------------------------
+# Stage 13 — Test Coverage Gaps
+# ---------------------------------------------------------------------------
+
+
+class TestExpenseCoverageShareFloors:
+    """Stage 13: Expense coverage first pass should respect implicit share% floors
+    in the first pass (profitability-ordered), with only the reverse-priority
+    fallback violating them. Currently the first pass ignores share% floors (bug A)."""
+
+    @pytest.mark.xfail(reason="Bug A: first pass ignores implicit share% floors")
+    def test_first_pass_respects_share_floor(self):
+        """First-pass expense coverage should not sell a bucket below its
+        implicit share% floor from a share_below trigger.
+
+        Source starts at 60% (60000/100000) with a 50% implicit floor.
+        Available above floor = 10000. Expense = 30000.
+        First pass should sell 10000 from Source (down to floor), then 20000
+        from Other. Bug: first pass ignores share floor, sells all 30000
+        from Source (most profitable), pushing it to 30000/70000 = 43%.
+        """
+        # share_below trigger creates implicit floor; use period_months=12
+        # and run at month_idx=1 so the trigger itself doesn't fire in Phase 4,
+        # isolating the expense coverage first-pass behavior.
+        source_trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=50.0,
+            source_buckets=["Other"],
+            period_months=12,
+        )
+        # Source: 60%, doubled in price → most profitable, has 50% floor
+        source = _make_state("Source", price=200, amount=60000,
+                             initial_price=100, spending_priority=0,
+                             triggers=[source_trigger])
+        # Other: 40%, same price → less profitable
+        other = _make_state("Other", price=100, amount=40000,
+                            initial_price=100, spending_priority=1)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="Source", initial_price=100, initial_amount=60000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5),
+                InvestmentBucket(name="Other", initial_price=100, initial_amount=40000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5),
+            ],
+        )
+
+        # 30000 expense: with floor, Source sells 10000, Other sells 20000
+        # Without floor (bug): Source sells all 30000 (most profitable)
+        # month_idx=1 prevents the buy trigger from firing in Phase 4
+        execute_rebalance([source, other], 30000, {}, config, 1)
+
+        total = source.amount + other.amount
+        source_share = source.amount / total * 100 if total > 0 else 0
+        assert source_share >= 49.5, \
+            f"Source share {source_share:.1f}% fell below 50% floor in first pass"
+
+    def test_fallback_can_violate_share_floor(self):
+        """Reverse-priority fallback should violate share% floors when all
+        buckets are at their cash floors (expenses must be covered)."""
+        # Both buckets have share_below triggers AND are at their cash floors
+        trigger_a = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=45.0,
+            source_buckets=["BucketB"],
+        )
+        trigger_b = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=45.0,
+            source_buckets=["BucketA"],
+        )
+        # Both at cash floor (3*1000=3000), both with 45% share floor
+        bucket_a = _make_state("BucketA", price=1, amount=3000,
+                               initial_price=1, spending_priority=0,
+                               cash_floor_months=3, triggers=[trigger_a])
+        bucket_b = _make_state("BucketB", price=1, amount=3000,
+                               initial_price=1, spending_priority=1,
+                               cash_floor_months=3, triggers=[trigger_b])
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="BucketA", initial_price=1, initial_amount=3000,
+                                 growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0,
+                                 cash_floor_months=3),
+                InvestmentBucket(name="BucketB", initial_price=1, initial_amount=3000,
+                                 growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0,
+                                 cash_floor_months=3),
+            ],
+        )
+
+        total_covered = execute_rebalance([bucket_a, bucket_b], 1000, {}, config, 0)
+
+        # Expenses must be covered even though both are at floor
+        assert total_covered == 1000
+        # At least one bucket was sold below its floor
+        assert bucket_a.amount_sold > 0 or bucket_b.amount_sold > 0
+
+
+class TestCrossCurrencyDoubleConversion:
+    """Stage 13: Cross-currency trigger between two non-expenses-currency
+    buckets routes through expenses currency, charging FX fees twice."""
+
+    def test_double_fx_fee_between_foreign_buckets(self):
+        """Sell EUR bucket → buy GBP bucket (expenses=USD). Both FX conversion
+        fees should be charged (seller EUR→USD + target USD→GBP)."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.TAKE_PROFIT.value,
+            threshold_pct=100,
+            target_bucket="GBP_Fund",
+        )
+        eur_bucket = _make_state("EUR_Fund", currency="EUR", price=200, amount=10000,
+                                 initial_price=100, target_growth_pct=10,
+                                 triggers=[trigger])
+        gbp_bucket = _make_state("GBP_Fund", currency="GBP", price=100, amount=5000,
+                                 initial_price=100)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="EUR_Fund", currency="EUR", initial_price=100,
+                                 initial_amount=10000, growth_min_pct=-10,
+                                 growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=0),
+                InvestmentBucket(name="GBP_Fund", currency="GBP", initial_price=100,
+                                 initial_amount=5000, growth_min_pct=-10,
+                                 growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=0),
+            ],
+            currencies=[
+                CurrencySettings(
+                    code="EUR", initial_price=1.1,
+                    min_price=0.9, max_price=1.3, avg_price=1.1,
+                    conversion_fee_pct=2.0,
+                ),
+                CurrencySettings(
+                    code="GBP", initial_price=1.3,
+                    min_price=1.0, max_price=1.5, avg_price=1.3,
+                    conversion_fee_pct=3.0,
+                ),
+            ],
+        )
+
+        fx_rates = {"EUR": 1.1, "GBP": 1.3}
+        execute_rebalance([eur_bucket, gbp_bucket], 0, fx_rates, config, 0)
+
+        assert eur_bucket.amount_sold > 0, "EUR sell trigger should fire"
+        assert gbp_bucket.amount_bought > 0, "GBP should receive proceeds"
+
+        # Both EUR (seller) and GBP (target) should have FX fees charged
+        assert eur_bucket.fees_paid > 0, "EUR seller should pay FX conversion fee"
+        assert gbp_bucket.fees_paid > 0, "GBP target should pay FX conversion fee"
+
+        # Verify the double-fee reduces total proceeds
+        # Gross sell: eur_bucket sold some amount at price 200
+        # After EUR→USD fee (2%) and USD→GBP fee (3%), proceeds should be
+        # noticeably less than direct conversion
+        sell_gross_eur = eur_bucket.amount_sold
+        sell_gross_usd = sell_gross_eur * 1.1  # EUR→USD at rate 1.1
+        # After 2% EUR fee + 3% GBP fee ≈ 5% total loss
+        expected_bought_usd = sell_gross_usd * 0.98 * 0.97  # rough
+        actual_bought_usd = gbp_bucket.amount_bought * 1.3
+        assert actual_bought_usd < sell_gross_usd, \
+            "Double FX fees should reduce proceeds vs gross sell"
+
+
+class TestMultipleShareTriggersValidation:
+    """Stage 13: Model should reject bucket with multiple share_below
+    or multiple share_exceeds triggers (validates fix B)."""
+
+    @pytest.mark.xfail(reason="Bug B: no validation for duplicate share triggers")
+    def test_rejects_multiple_share_below_triggers(self):
+        """A bucket with two share_below buy triggers should be rejected."""
+        t1 = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=20.0,
+            source_buckets=["Cash"],
+        )
+        t2 = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=30.0,
+            source_buckets=["Cash"],
+        )
+        with pytest.raises(ValueError):
+            InvestmentBucket(
+                name="Test", initial_price=100, initial_amount=10000,
+                growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+                triggers=[t1, t2],
+            )
+
+    @pytest.mark.xfail(reason="Bug B: no validation for duplicate share triggers")
+    def test_rejects_multiple_share_exceeds_triggers(self):
+        """A bucket with two share_exceeds sell triggers should be rejected."""
+        t1 = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.SHARE_EXCEEDS.value,
+            threshold_pct=50.0,
+            target_bucket="Cash",
+        )
+        t2 = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.SHARE_EXCEEDS.value,
+            threshold_pct=60.0,
+            target_bucket="Cash",
+        )
+        with pytest.raises(ValueError):
+            InvestmentBucket(
+                name="Test", initial_price=100, initial_amount=10000,
+                growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+                triggers=[t1, t2],
+            )
+
+    def test_allows_one_share_below_and_one_share_exceeds(self):
+        """A bucket with one share_below and one share_exceeds should be valid."""
+        t1 = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=20.0,
+            source_buckets=["Cash"],
+        )
+        t2 = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.SHARE_EXCEEDS.value,
+            threshold_pct=60.0,
+            target_bucket="Cash",
+        )
+        # Should not raise
+        b = InvestmentBucket(
+            name="Test", initial_price=100, initial_amount=10000,
+            growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+            triggers=[t1, t2],
+        )
+        assert len(b.triggers) == 2
+
+
+class TestCashPoolRefillTargetValidation:
+    """Stage 13: CashPool should validate refill_target_months >= refill_trigger_months
+    (validates fix C)."""
+
+    @pytest.mark.xfail(reason="Bug C: no cross-field validation on CashPool")
+    def test_rejects_target_below_trigger(self):
+        """refill_target_months < refill_trigger_months should be rejected."""
+        with pytest.raises(ValueError):
+            CashPool(
+                initial_amount=0,
+                refill_trigger_months=24,
+                refill_target_months=12,
+                cash_floor_months=6,
+            )
+
+    def test_allows_target_equal_to_trigger(self):
+        """refill_target_months == refill_trigger_months should be valid."""
+        cp = CashPool(
+            initial_amount=0,
+            refill_trigger_months=12,
+            refill_target_months=12,
+            cash_floor_months=6,
+        )
+        assert cp.refill_target_months == 12
+
+    def test_allows_target_above_trigger(self):
+        """refill_target_months > refill_trigger_months should be valid."""
+        cp = CashPool(
+            initial_amount=0,
+            refill_trigger_months=12,
+            refill_target_months=24,
+            cash_floor_months=6,
+        )
+        assert cp.refill_target_months == 24
+
+
+class TestProfitabilityCostBasisMethod:
+    """Stage 13: Profitability ordering should use the bucket's cost basis method
+    (FIFO/LIFO) instead of always using avg_cost (validates fix D)."""
+
+    @pytest.mark.xfail(reason="Bug D: profitability always uses avg_cost regardless of cost basis method")
+    def test_fifo_profitability_differs_from_avco(self):
+        """With FIFO, profitability should be based on the oldest (cheapest) lots,
+        making the bucket appear MORE profitable than AVCO suggests.
+
+        Setup: FIFO bucket with a small cheap initial lot + large expensive lot.
+        avg_cost is skewed toward the expensive lot, making AVCO profitability
+        low (or negative). But FIFO sells the cheap lot first → high profitability.
+
+        FIFO bucket: Lot 1 = 1000 at price 50, Lot 2 = 19000 at price 180
+          avg_cost = (20*50 + 105.6*180) / 125.6 = (1000+19000)/125.6 ≈ 159.2
+          Current price = 160
+          AVCO gain_ratio: (160-159.2)/159.2 = 0.5% (barely profitable)
+          FIFO gain_ratio: (160-50)/50 = 220% (very profitable)
+        Moderate: avg_cost = 100, price = 160 → (160-100)/100 = 60% gain
+        """
+        fifo_bucket = _make_state("FIFO_Bucket", price=160, amount=20000,
+                                  initial_price=50, buy_sell_fee_pct=0,
+                                  spending_priority=0,
+                                  cost_basis_method=CostBasisMethod.FIFO)
+        # Override: replace initial lot (1000 at 50) and add large expensive lot
+        fifo_bucket.purchase_lots = [PurchaseLot(price=50, units=20)]
+        _add_purchase_lot(fifo_bucket, 19000, 180)
+        # avg_cost now ≈ 159.2, making AVCO profitability very low
+
+        moderate = _make_state("Moderate", price=160, amount=20000,
+                               initial_price=100, buy_sell_fee_pct=0,
+                               spending_priority=1)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="FIFO_Bucket", initial_price=50,
+                                 initial_amount=20000, growth_min_pct=-10,
+                                 growth_max_pct=30, growth_avg_pct=10,
+                                 cost_basis_method=CostBasisMethod.FIFO),
+                InvestmentBucket(name="Moderate", initial_price=100,
+                                 initial_amount=20000, growth_min_pct=-10,
+                                 growth_max_pct=30, growth_avg_pct=10),
+            ],
+        )
+
+        execute_rebalance([fifo_bucket, moderate], 5000, {}, config, 0)
+
+        # With FIFO: next-to-sell lot costs 50, profitability ≈ 220% → sold first.
+        # With AVCO (bug): avg_cost ≈ 159, profitability ≈ 0.5% < Moderate's 60%.
+        # Bug causes Moderate to be sold first instead of FIFO_Bucket.
+        assert fifo_bucket.amount_sold > 0, \
+            "FIFO bucket should be sold first (highest FIFO profitability)"
+        assert moderate.amount_sold == 0, \
+            "Moderate bucket should not be sold when FIFO bucket is more profitable"
+
+    @pytest.mark.xfail(reason="Bug D: profitability always uses avg_cost regardless of cost basis method")
+    def test_lifo_profitability_differs_from_avco(self):
+        """With LIFO, profitability should be based on the newest (most expensive)
+        lots, making the bucket appear LESS profitable than AVCO suggests.
+
+        Setup: LIFO bucket with cheap old lot + expensive recent lot.
+        LIFO sells expensive lot first → low profitability.
+        AVCO averages → moderate profitability.
+        """
+        # Lot 1: 5000 at price 50 (old cheap)
+        # Lot 2: 5000 at price 150 (recent expensive)
+        # avg_cost = 100, current price = 120
+        # AVCO profitability: (120-100)/100 = 20% gain
+        # LIFO profitability: (120-150)/150 = -20% loss (sells expensive lot first)
+        lifo_bucket = _make_state("LIFO_Bucket", price=120, amount=20000,
+                                  initial_price=50, buy_sell_fee_pct=0,
+                                  spending_priority=1,
+                                  cost_basis_method=CostBasisMethod.LIFO)
+        _add_purchase_lot(lifo_bucket, 10000, 150)
+
+        # Another bucket with slight gain: avg_cost=110, price=120 → 9% gain
+        slight_gain = _make_state("SlightGain", price=120, amount=20000,
+                                  initial_price=110, buy_sell_fee_pct=0,
+                                  spending_priority=0)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="LIFO_Bucket", initial_price=50,
+                                 initial_amount=20000, growth_min_pct=-10,
+                                 growth_max_pct=30, growth_avg_pct=10,
+                                 cost_basis_method=CostBasisMethod.LIFO),
+                InvestmentBucket(name="SlightGain", initial_price=110,
+                                 initial_amount=20000, growth_min_pct=-10,
+                                 growth_max_pct=30, growth_avg_pct=10),
+            ],
+        )
+
+        execute_rebalance([lifo_bucket, slight_gain], 5000, {}, config, 0)
+
+        # With LIFO, next-to-sell lot cost 150, profit = (120-150)/150 = -20% (loss).
+        # SlightGain profit = (120-110)/110 = 9%. SlightGain should sell first.
+        #
+        # With AVCO (bug), LIFO_Bucket avg_cost=100, profit=20% > SlightGain's 9%.
+        # LIFO_Bucket would incorrectly be sold first.
+        assert slight_gain.amount_sold > 0, \
+            "SlightGain should be sold first (LIFO bucket is losing on next lots)"
+        assert lifo_bucket.amount_sold == 0, \
+            "LIFO bucket should not be sold first (next lots are at a loss)"
