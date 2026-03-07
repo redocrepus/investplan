@@ -45,13 +45,13 @@ GUI: Excel like table where rows are months and columns are customizable financi
     - **Implicit share% limits**: Share-based triggers create implicit boundaries that apply across the system:
       - `share_below X%` → implicit floor: triggers and cash pool refill will not sell this bucket below X% portfolio share
       - `share_exceeds X%` → implicit ceiling: triggers will not buy into this bucket above X% portfolio share
-      - Expense coverage can still violate these limits as a last resort (expenses must be covered)
-  - Multiple triggers can be added to a single bucket
+      - Expense coverage first pass (profitability-ordered) respects these limits; only the reverse-priority fallback violates them as a last resort (expenses must be covered)
+  - Multiple triggers can be added to a single bucket, but at most one `share_below` buy trigger and one `share_exceeds` sell trigger per bucket
   - **Trigger execution order within a month:** Sell triggers first, then expense coverage, then cash pool refill, then buy triggers. All triggers are evaluated on a snapshot of portfolio state at the start of their phase (not re-evaluated after each execution within the same phase).
   - **Rebalancing cost rules:** When a trigger causes selling bucket A to buy bucket B:
     - Buy/sell fees are applied on both the sell side (bucket A fee) and the buy side (bucket B fee)
     - Capital gain tax is applied on any realized gain from the sell (using the bucket's chosen cost basis method)
-    - If bucket A and bucket B are in different currencies, FX conversion is applied at the current simulated rate (plus conversion fee)
+    - If bucket A and bucket B are in different currencies, FX conversion is applied at the current simulated rate (plus conversion fee). When bucket A and bucket B share the same foreign currency, proceeds transfer directly without double FX conversion — only the capital gains tax amount (if any) is converted to expenses currency.
 
 - For each non-Expenses currecy:
   - Initial price (in Expenses currency)
@@ -85,7 +85,7 @@ At the beginning of each month:
 ## Expense coverage rules
 When covering expenses (step 5 above):
 1. If the cash pool balance is below the month's expenses, refill it to refill target first (step 5a). Then draw from the cash pool. If still insufficient after refill, draw whatever is available and fall through to direct bucket selling for the remainder.
-2. Sell from buckets in order of highest profitability, respecting the cash floor guards. The profitability of selling a bucket is calculated as the gross gain after converting to expenses currency applying the current FX rate if needed and the fees.
+2. Sell from buckets in order of highest profitability, respecting the cash floor guards and implicit share% floors. The profitability of selling a bucket is calculated as the gross gain of the next lots to sell (per the bucket's cost basis method: FIFO front, LIFO back, AVCO average) after converting to expenses currency applying the current FX rate if needed and the fees.
 3. If there are no profitable buckets to sell, sell from buckets in order of spending priority, respecting the cash floor guards, even if it means selling at a loss.
 4. If all buckets hit the cash floor, sell in the reverse order of spending priority, even if it means selling at a loss AND violating the cash floor. This preserves the most stable assets (highest priority) as long as possible during financial distress.
 

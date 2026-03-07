@@ -95,6 +95,7 @@ class GlobalPanel(QGroupBox):
         self._cp_refill_target.setSuffix(" months")
         self._cp_refill_target.setToolTip(
             "Refill the cash pool up to this many months of expenses. "
+            "Must be >= Refill Trigger. "
             "Buckets are sold in order of highest profitability to refill."
         )
         cp_form.addRow("Refill Target:", self._cp_refill_target)

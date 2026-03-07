@@ -1,6 +1,6 @@
 """Top-level simulation configuration model."""
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from models.inflation import InflationSettings
 from models.expense import ExpensePeriod, OneTimeExpense
 from models.currency import CurrencySettings
@@ -42,6 +42,14 @@ class CashPool(BaseModel):
         if v < 0:
             raise ValueError("cash_floor_months must be >= 0")
         return v
+
+    @model_validator(mode="after")
+    def _check_refill_target_gte_trigger(self):
+        if self.refill_target_months < self.refill_trigger_months:
+            raise ValueError(
+                "refill_target_months must be >= refill_trigger_months"
+            )
+        return self
 
 
 class SimConfig(BaseModel):

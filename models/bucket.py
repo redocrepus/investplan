@@ -85,6 +85,19 @@ class InvestmentBucket(BaseModel):
 
     @model_validator(mode="after")
     def _check_bounds(self):
+        # Validate at most one share_below and one share_exceeds trigger
+        share_below_count = sum(
+            1 for t in self.triggers
+            if t.trigger_type == TriggerType.BUY and t.subtype == BuySubtype.SHARE_BELOW.value
+        )
+        share_exceeds_count = sum(
+            1 for t in self.triggers
+            if t.trigger_type == TriggerType.SELL and t.subtype == SellSubtype.SHARE_EXCEEDS.value
+        )
+        if share_below_count > 1:
+            raise ValueError("At most one share_below buy trigger is allowed per bucket")
+        if share_exceeds_count > 1:
+            raise ValueError("At most one share_exceeds sell trigger is allowed per bucket")
         if self.growth_min_pct > self.growth_max_pct:
             raise ValueError("growth_min_pct must be <= growth_max_pct")
         if not (self.growth_min_pct <= self.growth_avg_pct <= self.growth_max_pct):

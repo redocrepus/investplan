@@ -1557,7 +1557,6 @@ class TestExpenseCoverageShareFloors:
     in the first pass (profitability-ordered), with only the reverse-priority
     fallback violating them. Currently the first pass ignores share% floors (bug A)."""
 
-    @pytest.mark.xfail(reason="Bug A: first pass ignores implicit share% floors")
     def test_first_pass_respects_share_floor(self):
         """First-pass expense coverage should not sell a bucket below its
         implicit share% floor from a share_below trigger.
@@ -1722,7 +1721,6 @@ class TestMultipleShareTriggersValidation:
     """Stage 13: Model should reject bucket with multiple share_below
     or multiple share_exceeds triggers (validates fix B)."""
 
-    @pytest.mark.xfail(reason="Bug B: no validation for duplicate share triggers")
     def test_rejects_multiple_share_below_triggers(self):
         """A bucket with two share_below buy triggers should be rejected."""
         t1 = BucketTrigger(
@@ -1744,7 +1742,6 @@ class TestMultipleShareTriggersValidation:
                 triggers=[t1, t2],
             )
 
-    @pytest.mark.xfail(reason="Bug B: no validation for duplicate share triggers")
     def test_rejects_multiple_share_exceeds_triggers(self):
         """A bucket with two share_exceeds sell triggers should be rejected."""
         t1 = BucketTrigger(
@@ -1793,7 +1790,6 @@ class TestCashPoolRefillTargetValidation:
     """Stage 13: CashPool should validate refill_target_months >= refill_trigger_months
     (validates fix C)."""
 
-    @pytest.mark.xfail(reason="Bug C: no cross-field validation on CashPool")
     def test_rejects_target_below_trigger(self):
         """refill_target_months < refill_trigger_months should be rejected."""
         with pytest.raises(ValueError):
@@ -1829,7 +1825,6 @@ class TestProfitabilityCostBasisMethod:
     """Stage 13: Profitability ordering should use the bucket's cost basis method
     (FIFO/LIFO) instead of always using avg_cost (validates fix D)."""
 
-    @pytest.mark.xfail(reason="Bug D: profitability always uses avg_cost regardless of cost basis method")
     def test_fifo_profitability_differs_from_avco(self):
         """With FIFO, profitability should be based on the oldest (cheapest) lots,
         making the bucket appear MORE profitable than AVCO suggests.
@@ -1881,7 +1876,6 @@ class TestProfitabilityCostBasisMethod:
         assert moderate.amount_sold == 0, \
             "Moderate bucket should not be sold when FIFO bucket is more profitable"
 
-    @pytest.mark.xfail(reason="Bug D: profitability always uses avg_cost regardless of cost basis method")
     def test_lifo_profitability_differs_from_avco(self):
         """With LIFO, profitability should be based on the newest (most expensive)
         lots, making the bucket appear LESS profitable than AVCO suggests.
@@ -1930,3 +1924,95 @@ class TestProfitabilityCostBasisMethod:
             "SlightGain should be sold first (LIFO bucket is losing on next lots)"
         assert lifo_bucket.amount_sold == 0, \
             "LIFO bucket should not be sold first (next lots are at a loss)"
+
+
+class TestSameCurrencyShortCircuit:
+    """Stage 13 fix E: When seller and target share the same foreign currency,
+    FX conversion should be short-circuited (no double fee)."""
+
+    def test_same_foreign_currency_no_double_fee(self):
+        """Two EUR buckets (expenses=USD): proceeds should transfer directly
+        without EUR→USD→EUR double conversion fee."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.TAKE_PROFIT.value,
+            threshold_pct=100,
+            target_bucket="EUR_Target",
+        )
+        seller = _make_state("EUR_Seller", currency="EUR", price=200, amount=10000,
+                             initial_price=100, target_growth_pct=10,
+                             buy_sell_fee_pct=0, triggers=[trigger])
+        target = _make_state("EUR_Target", currency="EUR", price=100, amount=5000,
+                             initial_price=100, buy_sell_fee_pct=0)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="EUR_Seller", currency="EUR", initial_price=100,
+                                 initial_amount=10000, growth_min_pct=-10,
+                                 growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=0),
+                InvestmentBucket(name="EUR_Target", currency="EUR", initial_price=100,
+                                 initial_amount=5000, growth_min_pct=-10,
+                                 growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=0),
+            ],
+            currencies=[
+                CurrencySettings(
+                    code="EUR", initial_price=1.1,
+                    min_price=0.9, max_price=1.3, avg_price=1.1,
+                    conversion_fee_pct=5.0,  # high fee to make the difference obvious
+                ),
+            ],
+        )
+
+        fx_rates = {"EUR": 1.1}
+        execute_rebalance([seller, target], 0, fx_rates, config, 0)
+
+        assert seller.amount_sold > 0, "Sell trigger should fire"
+        # With short-circuit: proceeds go directly EUR→EUR, no FX fee on transfer
+        # Target should receive exactly what seller sold (no buy/sell fees either)
+        assert abs(target.amount_bought - seller.amount_sold) < 1.0, \
+            "Same-currency transfer should not lose value to FX fees"
+        # Neither bucket should have FX conversion fees (only possible fee is
+        # on tax amount conversion, but tax=0 here)
+        assert seller.fees_paid == 0, "No FX fee for same-currency seller"
+        assert target.fees_paid == 0, "No FX fee for same-currency target"
+
+
+class TestNetYieldNone:
+    """Stage 13 fix F: _estimate_net_yield returns None when yield <= 0,
+    and callers skip the source instead of using a 1% floor."""
+
+    def test_extreme_fees_skip_source(self):
+        """A bucket with 100% buy/sell fee should be skipped for expense coverage
+        (yield is effectively 0), falling through to the next bucket."""
+        # Bucket with extreme fee (100%) → net_yield ≈ 0 → should be skipped
+        extreme = _make_state("Extreme", price=100, amount=50000,
+                              initial_price=100, buy_sell_fee_pct=100,
+                              spending_priority=0)
+        # Normal bucket to cover expenses
+        normal = _make_state("Normal", price=100, amount=50000,
+                             initial_price=100, buy_sell_fee_pct=0,
+                             spending_priority=1)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="Extreme", initial_price=100,
+                                 initial_amount=50000, growth_min_pct=0,
+                                 growth_max_pct=0, growth_avg_pct=0,
+                                 buy_sell_fee_pct=100),
+                InvestmentBucket(name="Normal", initial_price=100,
+                                 initial_amount=50000, growth_min_pct=0,
+                                 growth_max_pct=0, growth_avg_pct=0),
+            ],
+        )
+
+        execute_rebalance([extreme, normal], 5000, {}, config, 0)
+
+        # Extreme bucket should be skipped (net yield is 0)
+        assert extreme.amount_sold == 0, \
+            "Bucket with 0 net yield should be skipped in expense coverage"
+        assert normal.amount_sold > 0, \
+            "Normal bucket should cover expenses instead"

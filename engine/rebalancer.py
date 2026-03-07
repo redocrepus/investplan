@@ -222,18 +222,37 @@ def _available_to_sell(
     return max(0.0, bucket_value - effective_floor)
 
 
+def _next_lot_cost_per_unit(b: BucketState) -> float:
+    """Return cost per unit for the next lots to sell based on cost basis method.
+
+    FIFO: front lot price, LIFO: back lot price, AVCO: avg_cost.
+    Falls back to initial_price if no lots exist.
+    """
+    if b.cost_basis_method == CostBasisMethod.AVCO:
+        return b.avg_cost if b.avg_cost > 0 else b.initial_price
+    if not b.purchase_lots:
+        return b.avg_cost if b.avg_cost > 0 else b.initial_price
+    if b.cost_basis_method == CostBasisMethod.FIFO:
+        return b.purchase_lots[0].price
+    # LIFO
+    return b.purchase_lots[-1].price
+
+
 def _bucket_profitability(
     b: BucketState, fx_rate: float, fee_pct: float,
     conv_fee_pct: float, expenses_currency: str,
 ) -> float:
-    """Compute profitability of selling from a bucket: gross gain after FX + fees."""
+    """Compute profitability of selling from a bucket: gross gain after FX + fees.
+
+    Uses the actual next-to-sell lot cost based on the bucket's cost basis method
+    (FIFO front, LIFO back, AVCO average) for consistent profitability ordering.
+    """
     value_exp = b.amount * fx_rate
     fee_cost = value_exp * fee_pct / 100.0
     conv_cost = 0.0
     if b.currency != expenses_currency:
         conv_cost = value_exp * conv_fee_pct / 100.0
-    # Gain = current value - cost basis using avg_cost (actual cost basis)
-    cost_per_unit = b.avg_cost if b.avg_cost > 0 else b.initial_price
+    cost_per_unit = _next_lot_cost_per_unit(b)
     if cost_per_unit > 0:
         gain_ratio = (b.price - cost_per_unit) / cost_per_unit
     else:
@@ -247,13 +266,15 @@ def _estimate_net_yield(
     capital_gain_tax_pct: float,
     expenses_currency: str,
     config: SimConfig,
-) -> float:
+) -> float | None:
     """Estimate fraction of gross sell value (in expenses currency) that becomes net proceeds.
 
     Used to gross up sell amounts so net proceeds cover the intended target.
+    Returns None when yield <= 0 (extreme fee+tax scenarios make selling unviable).
+    Callers should skip this source when None is returned.
     """
     fee_rate = b.buy_sell_fee_pct / 100.0
-    cost_per_unit = b.avg_cost if b.avg_cost > 0 else b.initial_price
+    cost_per_unit = _next_lot_cost_per_unit(b)
     if b.price > 0 and cost_per_unit > 0:
         gain_fraction = max(0.0, (b.price - cost_per_unit) / b.price)
     else:
@@ -263,7 +284,9 @@ def _estimate_net_yield(
     if b.currency != expenses_currency:
         conv_fee_rate = get_conversion_fee_pct(b.currency, expenses_currency, config) / 100.0
     net_yield = (1 - fee_rate - tax_on_sell) * (1 - conv_fee_rate)
-    return max(net_yield, 0.01)
+    if net_yield <= 0:
+        return None
+    return net_yield
 
 
 def _snapshot_portfolio_total(
@@ -378,6 +401,8 @@ def _execute_sell_trigger(
                 return
             # Estimate max sell_amount that produces headroom worth of net proceeds
             net_yield = _estimate_net_yield(seller, capital_gain_tax_pct, expenses_currency, config)
+            if net_yield is None:
+                return
             buy_yield = 1.0 - target_state.buy_sell_fee_pct / 100.0
             max_sell = headroom / (seller_fx * net_yield * max(buy_yield, 0.01))
             sell_amount = min(sell_amount, max_sell)
@@ -403,31 +428,50 @@ def _execute_sell_trigger(
         target = name_to_state[trigger.target_bucket]
         target_fx = get_fx_rate(target.currency, expenses_currency, fx_rates)
 
-        # Convert proceeds: seller currency -> expenses currency -> target currency
-        proceeds_expenses = after_tax * seller_fx
+        if seller.currency == target.currency and seller.currency != expenses_currency:
+            # Short-circuit: same foreign currency — only convert tax amount
+            # to expenses currency, transfer the rest directly (no double FX fee).
+            conv_fee_pct = get_conversion_fee_pct(seller.currency, expenses_currency, config)
+            # Tax was computed in seller currency; convert only tax to expenses currency
+            tax_in_expenses = tax * seller_fx
+            if conv_fee_pct > 0 and tax > 0:
+                fx_fee_on_tax = tax_in_expenses * conv_fee_pct / 100.0
+                seller.fees_paid += fx_fee_on_tax
+            # Remaining proceeds stay in seller currency (= target currency)
+            buy_amount_target = after_tax
+            if buy_amount_target <= 0:
+                return
+            invested, buy_fee = compute_buy(buy_amount_target, target.buy_sell_fee_pct)
+            target.amount += invested
+            target.amount_bought += invested
+            target.fees_paid += buy_fee * target_fx
+            _add_purchase_lot(target, invested, target.price)
+        else:
+            # Convert proceeds: seller currency -> expenses currency -> target currency
+            proceeds_expenses = after_tax * seller_fx
 
-        # Apply FX conversion fee if cross-currency
-        seller_conv_fee_pct = get_conversion_fee_pct(seller.currency, expenses_currency, config)
-        if seller.currency != expenses_currency:
-            fx_fee = proceeds_expenses * seller_conv_fee_pct / 100.0
-            proceeds_expenses -= fx_fee
-            seller.fees_paid += fx_fee
+            # Apply FX conversion fee if cross-currency
+            seller_conv_fee_pct = get_conversion_fee_pct(seller.currency, expenses_currency, config)
+            if seller.currency != expenses_currency:
+                fx_fee = proceeds_expenses * seller_conv_fee_pct / 100.0
+                proceeds_expenses -= fx_fee
+                seller.fees_paid += fx_fee
 
-        target_conv_fee_pct = get_conversion_fee_pct(target.currency, expenses_currency, config)
-        if target.currency != expenses_currency:
-            fx_fee = proceeds_expenses * target_conv_fee_pct / 100.0
-            proceeds_expenses -= fx_fee
-            target.fees_paid += fx_fee
+            target_conv_fee_pct = get_conversion_fee_pct(target.currency, expenses_currency, config)
+            if target.currency != expenses_currency:
+                fx_fee = proceeds_expenses * target_conv_fee_pct / 100.0
+                proceeds_expenses -= fx_fee
+                target.fees_paid += fx_fee
 
-        if proceeds_expenses <= 0:
-            return
+            if proceeds_expenses <= 0:
+                return
 
-        buy_amount_target = proceeds_expenses / target_fx if target_fx > 0 else 0
-        invested, buy_fee = compute_buy(buy_amount_target, target.buy_sell_fee_pct)
-        target.amount += invested
-        target.amount_bought += invested
-        target.fees_paid += buy_fee * target_fx
-        _add_purchase_lot(target, invested, target.price)
+            buy_amount_target = proceeds_expenses / target_fx if target_fx > 0 else 0
+            invested, buy_fee = compute_buy(buy_amount_target, target.buy_sell_fee_pct)
+            target.amount += invested
+            target.amount_bought += invested
+            target.fees_paid += buy_fee * target_fx
+            _add_purchase_lot(target, invested, target.price)
 
 
 def _execute_buy_trigger(
@@ -558,6 +602,8 @@ def _execute_buy_trigger(
         else:
             # Gross up to account for fee/tax/FX shrinkage
             net_yield = _estimate_net_yield(source, capital_gain_tax_pct, expenses_currency, config)
+            if net_yield is None:
+                continue
             gross_needed = remaining_need / net_yield
             sell_expenses = min(gross_needed, available)
 
@@ -670,6 +716,8 @@ def _refill_cash_pool(
 
         # Gross up sell amount to account for fee/tax/FX shrinkage
         net_yield = _estimate_net_yield(b, capital_gain_tax_pct, expenses_currency, config)
+        if net_yield is None:
+            continue
         gross_needed = needed / net_yield
         sell_expenses = min(gross_needed, available_expenses)
         sell_bucket_currency = sell_expenses / fx
@@ -736,15 +784,17 @@ def _cover_expenses_from_buckets(
         if fx <= 0:
             continue
 
-        bucket_value_expenses = b.amount * fx
-        floor_amount_expenses = b.cash_floor_months * month_expense
-        available_expenses = max(0, bucket_value_expenses - floor_amount_expenses)
+        available_expenses = _available_to_sell(
+            b, month_expense, fx, bucket_states, fx_rates, expenses_currency,
+        )
 
         if available_expenses <= 0:
             continue
 
         # Gross up sell amount to account for fee/tax/FX shrinkage
         net_yield = _estimate_net_yield(b, capital_gain_tax_pct, expenses_currency, config)
+        if net_yield is None:
+            continue
         gross_needed = remaining_expense / net_yield
         sell_expenses = min(gross_needed, available_expenses)
         sell_bucket_currency = sell_expenses / fx
@@ -790,8 +840,12 @@ def _cover_expenses_from_buckets(
 
             # Gross up for shrinkage (fallback still applies fees/tax)
             net_yield = _estimate_net_yield(b, capital_gain_tax_pct, expenses_currency, config)
-            gross_needed = remaining_expense / net_yield
-            sell_expenses = min(gross_needed, bucket_value_expenses)
+            if net_yield is None:
+                # Yield is non-positive; sell everything available as last resort
+                sell_expenses = bucket_value_expenses
+            else:
+                gross_needed = remaining_expense / net_yield
+                sell_expenses = min(gross_needed, bucket_value_expenses)
             sell_bucket_currency = sell_expenses / fx
 
             net_proceeds, fee = compute_sell(sell_bucket_currency, b.buy_sell_fee_pct)
