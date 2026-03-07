@@ -230,10 +230,10 @@ Critical fixes identified during financial review. Tests must be strengthened to
 - [x] Include cash pool in portfolio total for share% calculations — `_portfolio_total_expenses_currency` now accepts `cash_pool_amount` parameter, threaded through sell/buy triggers and available-to-sell checks.
 - [x] Fix yearly trigger month logic — documented that month_idx=0 is the first month, triggers fire at 0, 12, 24, etc. Behavior is correct, just needed documentation.
 - [x] Remove log-return clamping slack in `engine/bucket.py` — removed `±0.01` that allowed exceeding configured min/max growth range.
-- [ ] Add trigger target bucket reference validation in `gui/main_window.py` — reject configs where `trigger.target_bucket` doesn't exist in `config.buckets`
-- [ ] Add currency mismatch validation — reject buckets referencing currencies without FX settings
-- [ ] Prevent self-referential triggers (bucket targeting itself)
-- [ ] Add rebalancer tests using `month_idx > 0` to cover yearly trigger logic
+- [x] Add trigger target bucket reference validation in `gui/main_window.py` — rejects missing target/source buckets
+- [x] Add currency mismatch validation — rejects buckets using currencies without FX settings
+- [x] Prevent self-referential triggers — rejects target_bucket or source_buckets referencing the owning bucket
+- [x] Yearly trigger logic covered by existing TestTriggerPeriodMonths tests (months 0, 12, 24, and non-fire months)
 
 **P3 — Robustness improvements:**
 - [ ] Add exception handling in `SimulationThread` — propagate errors to GUI

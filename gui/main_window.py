@@ -191,11 +191,46 @@ class MainWindow(QMainWindow):
             return "Period must be at least 1 year."
         if not config.buckets:
             return "Add at least one investment bucket."
+
+        bucket_names = {b.name for b in config.buckets}
+        currency_codes = {cs.code for cs in config.currencies}
+
         for b in config.buckets:
             if not b.name.strip():
                 return "All buckets must have a name."
             if b.growth_min_pct > b.growth_max_pct:
                 return f"Bucket '{b.name}': growth min must be <= max."
+            # Validate currency has FX settings (unless it's the expenses currency)
+            if b.currency != config.expenses_currency and b.currency not in currency_codes:
+                return (
+                    f"Bucket '{b.name}' uses currency '{b.currency}' "
+                    f"but no FX settings are configured for it."
+                )
+            # Validate trigger references
+            for t in b.triggers:
+                # Target bucket must exist
+                if t.target_bucket and t.target_bucket not in bucket_names:
+                    return (
+                        f"Bucket '{b.name}' trigger references "
+                        f"non-existent target bucket '{t.target_bucket}'."
+                    )
+                # Self-referential sell trigger
+                if t.target_bucket == b.name:
+                    return (
+                        f"Bucket '{b.name}' has a trigger targeting itself."
+                    )
+                # Source buckets must exist and not self-reference
+                for src in t.source_buckets:
+                    if src not in bucket_names:
+                        return (
+                            f"Bucket '{b.name}' trigger references "
+                            f"non-existent source bucket '{src}'."
+                        )
+                    if src == b.name:
+                        return (
+                            f"Bucket '{b.name}' has a buy trigger sourcing from itself."
+                        )
+
         if config.inflation.min_pct > config.inflation.max_pct:
             return "Inflation min must be <= max."
         for ep in config.expense_periods:
