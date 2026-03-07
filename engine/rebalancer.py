@@ -229,9 +229,10 @@ def _bucket_profitability(
     conv_cost = 0.0
     if b.currency != expenses_currency:
         conv_cost = value_exp * conv_fee_pct / 100.0
-    # Gain = current value - cost basis (approximated by initial price ratio)
-    if b.initial_price > 0:
-        gain_ratio = (b.price - b.initial_price) / b.initial_price
+    # Gain = current value - cost basis using avg_cost (actual cost basis)
+    cost_per_unit = b.avg_cost if b.avg_cost > 0 else b.initial_price
+    if cost_per_unit > 0:
+        gain_ratio = (b.price - cost_per_unit) / cost_per_unit
     else:
         gain_ratio = 0.0
     gross_gain = value_exp * gain_ratio - fee_cost - conv_cost

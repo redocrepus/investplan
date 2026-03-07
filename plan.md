@@ -211,18 +211,18 @@ Replaced the single-trigger `RebalancingParams` model with a flexible multi-trig
 Critical fixes identified during financial review. Tests must be strengthened to assert correct values, not just non-zero output.
 
 **P0 — Critical calculation bugs:**
-- [ ] Fix `_compute_cost_basis()` in `engine/rebalancer.py` — the function has a fundamental units-vs-value confusion. `PurchaseLot.amount` stores currency values but the cost basis loop treats them as the cost basis directly without adjusting for purchase price. **Requires converting to unit-based lot tracking**: `PurchaseLot` should store units (= currency_amount / price_per_unit), and cost basis = `units_sold * lot.price`. AVCO must return `units_sold * state.avg_cost`. All callers (`_execute_sell_trigger`, `_execute_buy_trigger`, `_refill_cash_pool`, `_cover_expenses_from_buckets`) must convert sell amounts to units via `sell_amount / current_price` before calling `_compute_cost_basis`.
-- [ ] Fix Take Profit trigger threshold comparison in `engine/rebalancer.py:253` — `ratio = actual_growth / target_growth` is a pure ratio (e.g. 1.5) but is compared against `threshold_pct` which is in percentage form everywhere else (e.g. discount uses 10 for 10%). A take profit threshold of 100 (meaning 100%) requires `ratio >= 100`, which is impossible. **Take profit triggers never fire.** Fix: compare `ratio * 100 >= threshold_pct` or document threshold as a ratio.
-- [ ] Fix `total_net_spent` when cash pool falls through to bucket selling in `engine/simulator.py:111-113` — when cash pool can't cover expenses and falls through to direct bucket selling, `total_net_spent` is set to `cash_pool.net_spent` only, missing the `sum(b.net_spent)` from the fallthrough. Should be `cash_pool.net_spent + sum(b.net_spent for b in bucket_states)`.
-- [ ] Strengthen cost basis tests with exact expected values (not just `tax_paid > 0`)
-- [ ] Add test verifying take profit trigger fires and produces correct sell amount
+- [x] Fix `_compute_cost_basis()` in `engine/rebalancer.py` — converted `PurchaseLot` to unit-based tracking (`units = currency_amount / price`). Cost basis now correctly computed as `units_sold * lot.price` (FIFO/LIFO) or `units_sold * avg_cost` (AVCO). Previously cost basis always equaled sell amount, making capital gains tax always zero.
+- [x] Fix Take Profit trigger threshold comparison — changed to `ratio * 100 >= threshold_pct` so threshold is consistently a percentage. Also uses `avg_cost` instead of `initial_price` for actual growth calculation per requirements. Previously entering threshold_pct=100 (meaning 100%) would never fire.
+- [x] Fix `total_net_spent` when cash pool falls through to bucket selling — now sums `cash_pool.net_spent + sum(b.net_spent)`.
+- [x] Strengthen cost basis tests with exact expected values (FIFO/LIFO/AVCO all verify precise cost basis amounts)
+- [x] Add test verifying take profit trigger fires and produces correct sell amount (`test_triggers_with_exact_sell_amount`)
 
 **P1 — Missing requirements & volatility bug:**
-- [ ] Implement expense coverage fallback in `engine/rebalancer.py` — when all buckets hit cash floor, sell in reverse spending priority order even if it violates the floor (per Requirements.md step 4)
-- [ ] Fix inflation volatility double-scaling in `engine/inflation.py:37` — `spec.monthly_sigma / 12.0` divides an already-monthly sigma by 12 again, killing volatility. Remove the `/ 12.0`
-- [ ] Fix `use_cash_pool` condition in `engine/simulator.py:82` — `use_cash_pool = config.cash_pool.initial_amount > 0` disables the cash pool when initial amount is 0 even if refill targets are configured. A user who sets initial cash to 0 but expects the pool to fill from profitable sells gets no cash pool. Should check whether any cash pool feature is meaningfully configured (e.g. `initial_amount > 0 or refill_target_months > 0`).
-- [ ] Add test for expense coverage fallback (all buckets at floor)
-- [ ] Add test verifying inflation volatility range matches profile
+- [x] Implement expense coverage fallback in `engine/rebalancer.py` — when all buckets hit cash floor, sells in reverse spending priority order even if it violates the floor (per Requirements.md step 4)
+- [x] Fix inflation volatility double-scaling in `engine/inflation.py` — removed erroneous `/ 12.0` that was killing volatility
+- [x] Fix `use_cash_pool` condition in `engine/simulator.py` — now checks `initial_amount > 0 or refill_target_months > 0`
+- [x] Add test for expense coverage fallback (`test_reverse_priority_fallback_when_all_at_floor`)
+- [x] Add test verifying inflation volatility range matches profile (`test_mild_volatility_std_matches_sigma`, `test_crazy_volatility_has_more_variation_than_mild`)
 
 **P2 — Logic fixes & financial modeling:**
 - [ ] Fix profitability ordering to use actual cost basis instead of `initial_price` in `engine/rebalancer.py:219` — `_bucket_profitability()` computes gain as `(price - initial_price) / initial_price`. After multiple buys/sells the effective cost basis diverges from initial_price, making "sell most profitable first" ordering inaccurate. Should use the bucket's cost basis (AVCO or lot-weighted average).
