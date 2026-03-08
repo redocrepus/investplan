@@ -2671,3 +2671,273 @@ class TestCashPoolDisabled:
         # Cash pool should not be used (initial=0, target=0)
         assert all(df["cash_pool_amount"] == 0), "Cash pool should stay zero"
         assert all(df["cash_pool_net_spent"] == 0), "No expenses from cash pool"
+
+
+# ---------------------------------------------------------------------------
+# Stage 15 — Test Coverage Gaps
+# ---------------------------------------------------------------------------
+
+
+class TestBuyTriggerSameCurrencyShortCircuit:
+    """Stage 15 #8: Buy trigger between same-foreign-currency buckets should not
+    double-charge FX conversion fees."""
+
+    def test_same_foreign_currency_no_double_fee(self):
+        """Two EUR buckets (expenses=USD): buy trigger source sell should transfer
+        directly without EUR→USD→EUR double conversion fee."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=50.0,
+            source_buckets=["EUR_Source"],
+        )
+        # Buyer: EUR, small share → triggers share_below 50%
+        buyer = _make_state("EUR_Buyer", currency="EUR", price=100, amount=5000,
+                            initial_price=100, buy_sell_fee_pct=0, triggers=[trigger])
+        # Source: EUR, large holdings
+        source = _make_state("EUR_Source", currency="EUR", price=100, amount=95000,
+                             initial_price=100, buy_sell_fee_pct=0)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="EUR_Buyer", currency="EUR", initial_price=100,
+                                 initial_amount=5000, growth_min_pct=-10,
+                                 growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=0),
+                InvestmentBucket(name="EUR_Source", currency="EUR", initial_price=100,
+                                 initial_amount=95000, growth_min_pct=-10,
+                                 growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=0),
+            ],
+            currencies=[
+                CurrencySettings(
+                    code="EUR", initial_price=1.1,
+                    min_price=0.9, max_price=1.3, avg_price=1.1,
+                    conversion_fee_pct=10.0,  # very high fee to make the difference obvious
+                ),
+            ],
+        )
+
+        fx_rates = {"EUR": 1.1}
+        execute_rebalance([buyer, source], 0, fx_rates, config, 0)
+
+        assert buyer.amount_bought > 0, "Buy trigger should fire"
+        assert source.amount_sold > 0, "Source should be sold"
+        # With short-circuit: proceeds go directly EUR→EUR, no FX fee on transfer.
+        # Without short-circuit: EUR→USD→EUR at 10% fee each way → ~19% total loss.
+        # Verify bought ≈ sold (no FX fee loss, only buy fee which is 0 here)
+        assert abs(buyer.amount_bought - source.amount_sold) < 1.0, \
+            "Same-currency transfer should not lose value to FX fees"
+        # Neither bucket should have FX conversion fees (tax=0 → no tax conversion needed)
+        assert source.fees_paid == 0, "No FX fee for same-currency source"
+        assert buyer.fees_paid == 0, "No FX fee for same-currency buyer"
+
+    def test_same_foreign_currency_with_tax(self):
+        """Same-currency short-circuit with capital gains tax: only the tax amount
+        should incur FX conversion fees."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=50.0,
+            source_buckets=["EUR_Source"],
+        )
+        buyer = _make_state("EUR_Buyer", currency="EUR", price=100, amount=5000,
+                            initial_price=100, buy_sell_fee_pct=0, triggers=[trigger])
+        # Source: EUR, price doubled → has gains → tax applies
+        source = _make_state("EUR_Source", currency="EUR", price=200, amount=95000,
+                             initial_price=100, buy_sell_fee_pct=0)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=25,
+            buckets=[
+                InvestmentBucket(name="EUR_Buyer", currency="EUR", initial_price=100,
+                                 initial_amount=5000, growth_min_pct=-10,
+                                 growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=0),
+                InvestmentBucket(name="EUR_Source", currency="EUR", initial_price=100,
+                                 initial_amount=95000, growth_min_pct=-10,
+                                 growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=0),
+            ],
+            currencies=[
+                CurrencySettings(
+                    code="EUR", initial_price=1.1,
+                    min_price=0.9, max_price=1.3, avg_price=1.1,
+                    conversion_fee_pct=10.0,
+                ),
+            ],
+        )
+
+        fx_rates = {"EUR": 1.1}
+        execute_rebalance([buyer, source], 0, fx_rates, config, 0)
+
+        assert source.amount_sold > 0, "Source should be sold"
+        assert source.tax_paid > 0, "Tax should be charged on gains"
+        # FX fee should only be on the tax amount conversion, not on the full transfer
+        # Tax is paid in expenses currency; FX fee applies on that conversion.
+        # Without short-circuit: FX fee would be ~10% of full proceeds (much larger)
+        if source.fees_paid > 0:
+            # FX fee should be small (10% of tax amount, not 10% of full proceeds)
+            assert source.fees_paid < source.tax_paid, \
+                "FX fee should only be on tax conversion, not full proceeds"
+
+    def test_mixed_currency_sources(self):
+        """Buy trigger with one same-currency source and one different-currency source.
+        Same-currency source should short-circuit, other should route via expenses."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=40.0,
+            source_buckets=["EUR_Source", "USD_Source"],
+        )
+        # Buyer: EUR
+        buyer = _make_state("EUR_Buyer", currency="EUR", price=100, amount=5000,
+                            initial_price=100, buy_sell_fee_pct=0, triggers=[trigger])
+        # EUR source: same currency → short-circuit
+        eur_source = _make_state("EUR_Source", currency="EUR", price=100, amount=45000,
+                                 initial_price=100, buy_sell_fee_pct=0)
+        # USD source: different currency → route via expenses
+        usd_source = _make_state("USD_Source", currency="USD", price=100, amount=50000,
+                                 initial_price=100, buy_sell_fee_pct=0)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="EUR_Buyer", currency="EUR", initial_price=100,
+                                 initial_amount=5000, growth_min_pct=-10,
+                                 growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=0),
+                InvestmentBucket(name="EUR_Source", currency="EUR", initial_price=100,
+                                 initial_amount=45000, growth_min_pct=-10,
+                                 growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=0),
+                InvestmentBucket(name="USD_Source", currency="USD", initial_price=100,
+                                 initial_amount=50000, growth_min_pct=-10,
+                                 growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=0),
+            ],
+            currencies=[
+                CurrencySettings(
+                    code="EUR", initial_price=1.1,
+                    min_price=0.9, max_price=1.3, avg_price=1.1,
+                    conversion_fee_pct=5.0,
+                ),
+            ],
+        )
+
+        fx_rates = {"EUR": 1.1}
+        execute_rebalance([buyer, eur_source, usd_source], 0, fx_rates, config, 0)
+
+        assert buyer.amount_bought > 0, "Buy trigger should fire"
+        # EUR source should have no FX fee (same-currency short-circuit, tax=0)
+        assert eur_source.fees_paid == 0, \
+            "EUR source should have no FX fee (same currency as buyer)"
+        # USD source: if sold, should have buyer-side EUR FX fee
+        # (USD→USD is free, but buying EUR requires USD→EUR conversion)
+
+
+class TestEstimateNetYieldAccuracy:
+    """Stage 15 #12: Verify _estimate_net_yield accuracy vs actual tax computation."""
+
+    def test_estimate_matches_actual(self):
+        """The estimated net yield should closely match actual proceeds/gross ratio."""
+        from engine.rebalancer import _estimate_net_yield
+
+        # Setup: bucket with 50% gain, 2% fee, 25% tax
+        state = _make_state("Test", price=150, amount=15000,
+                            initial_price=100, buy_sell_fee_pct=2.0)
+        fx_rate = 1.0
+        tax_rate = 25.0
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=tax_rate,
+            buckets=[
+                InvestmentBucket(name="Test", initial_price=100, initial_amount=15000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5,
+                                 buy_sell_fee_pct=2.0),
+            ],
+        )
+
+        # Get estimated yield
+        estimated = _estimate_net_yield(state, tax_rate, "USD", config, fx_rate)
+        assert estimated is not None
+
+        # Compute actual yield by doing the exact sell calculation
+        gross_sell = 3000  # sell 3000 currency
+        from engine.bucket import compute_sell
+        from engine.rebalancer import _compute_cost_basis
+
+        # Create a copy of state for the actual computation
+        state_copy = _make_state("Test", price=150, amount=15000,
+                                 initial_price=100, buy_sell_fee_pct=2.0)
+
+        net_proceeds, fee = compute_sell(gross_sell, state_copy.buy_sell_fee_pct)
+        cost_basis_exp = _compute_cost_basis(state_copy, gross_sell, fx_rate)
+        net_proceeds_exp = net_proceeds * fx_rate
+        gain_exp = net_proceeds_exp - cost_basis_exp
+        tax_exp = max(0, gain_exp * tax_rate / 100.0)
+        tax_bucket = tax_exp / fx_rate
+        after_tax = net_proceeds - tax_bucket
+        after_tax_exp = after_tax * fx_rate
+
+        actual_yield = after_tax_exp / (gross_sell * fx_rate)
+
+        # Estimate should be within 1% of actual
+        assert abs(estimated - actual_yield) < 0.01, \
+            f"Estimated yield {estimated:.4f} differs from actual {actual_yield:.4f}"
+
+    def test_estimate_with_cross_currency(self):
+        """Net yield estimate should account for FX conversion fees."""
+        from engine.rebalancer import _estimate_net_yield
+
+        state = _make_state("EUR_Fund", currency="EUR", price=150, amount=15000,
+                            initial_price=100, buy_sell_fee_pct=1.0)
+        fx_rate = 1.1
+        tax_rate = 25.0
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=tax_rate,
+            buckets=[
+                InvestmentBucket(name="EUR_Fund", currency="EUR", initial_price=100,
+                                 initial_amount=15000, growth_min_pct=0,
+                                 growth_max_pct=10, growth_avg_pct=5,
+                                 buy_sell_fee_pct=1.0),
+            ],
+            currencies=[
+                CurrencySettings(
+                    code="EUR", initial_price=1.1,
+                    min_price=0.9, max_price=1.3, avg_price=1.1,
+                    conversion_fee_pct=2.0,
+                ),
+            ],
+        )
+
+        estimated = _estimate_net_yield(state, tax_rate, "USD", config, fx_rate)
+        assert estimated is not None
+        # With 1% sell fee + ~tax + 2% FX fee, net yield should be well below 1.0
+        assert estimated < 0.95, "Net yield should account for fees, tax, and FX"
+        assert estimated > 0.5, "Net yield should still be positive"
+
+    def test_estimate_zero_gain_no_tax(self):
+        """When bucket has no gain, estimated yield should have no tax component."""
+        from engine.rebalancer import _estimate_net_yield
+
+        # Price unchanged → no gain → no tax
+        state = _make_state("Flat", price=100, amount=10000,
+                            initial_price=100, buy_sell_fee_pct=1.0)
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=25,
+            buckets=[
+                InvestmentBucket(name="Flat", initial_price=100, initial_amount=10000,
+                                 growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0,
+                                 buy_sell_fee_pct=1.0),
+            ],
+        )
+
+        estimated = _estimate_net_yield(state, 25.0, "USD", config, 1.0)
+        assert estimated is not None
+        # With 0 gain and 1% fee: yield = 1 - 0.01 = 0.99
+        assert abs(estimated - 0.99) < 0.001, \
+            f"Zero-gain yield should be 1-fee_rate, got {estimated}"

@@ -321,7 +321,8 @@ def _estimate_net_yield(
         gain_fraction = max(0.0, (current_price_exp - cost_per_unit_exp) / current_price_exp)
     else:
         gain_fraction = 0.0
-    tax_on_sell = capital_gain_tax_pct / 100.0 * gain_fraction * (1 - fee_rate)
+    # Tax is on gain after fees: gain_fraction - fee_rate (not gain_fraction * (1-fee_rate))
+    tax_on_sell = capital_gain_tax_pct / 100.0 * max(0.0, gain_fraction - fee_rate)
     conv_fee_rate = 0.0
     if b.currency != expenses_currency:
         conv_fee_rate = get_conversion_fee_pct(b.currency, expenses_currency, config) / 100.0
@@ -634,9 +635,13 @@ def _execute_buy_trigger(
     # unprofitable keeps original order (user-defined priority)
     sorted_sources = profitable + unprofitable
 
-    # Sell from sources
+    # Sell from sources.
+    # Same-currency short-circuit: when source and buyer share the same foreign
+    # currency, proceeds transfer directly without double FX conversion — only the
+    # capital gains tax amount is converted to expenses currency (per requirements).
     remaining_need = buy_value_expenses
-    total_proceeds_expenses = 0.0
+    total_proceeds_expenses = 0.0   # proceeds routed via expenses currency
+    total_proceeds_direct = 0.0     # proceeds transferred directly (same foreign currency)
 
     for source, _profit, source_fx, available in sorted_sources:
         if not unlimited_buy and remaining_need <= 0:
@@ -677,33 +682,56 @@ def _execute_buy_trigger(
         source.fees_paid += sell_fee * source_fx
         source.tax_paid += tax_exp
 
-        # Convert to expenses currency
-        proceeds_expenses = after_tax * source_fx
+        # Same-currency short-circuit: source and buyer share the same foreign currency
+        if source.currency == buyer.currency and source.currency != expenses_currency:
+            # Transfer directly — no double FX conversion.
+            # Only pay FX fee on the tax amount conversion (foreign → expenses currency).
+            conv_fee_pct = get_conversion_fee_pct(source.currency, expenses_currency, config)
+            if conv_fee_pct > 0 and tax_exp > 0:
+                fx_fee_on_tax = tax_exp * conv_fee_pct / 100.0
+                source.fees_paid += fx_fee_on_tax
+            total_proceeds_direct += after_tax  # in shared foreign currency
+            if not unlimited_buy:
+                remaining_need -= after_tax * source_fx  # track in expenses currency
+        else:
+            # Route through expenses currency
+            proceeds_expenses = after_tax * source_fx
 
-        # Apply FX conversion fees if cross-currency
-        source_conv_fee_pct = get_conversion_fee_pct(source.currency, expenses_currency, config)
-        if source.currency != expenses_currency:
-            fx_fee = proceeds_expenses * source_conv_fee_pct / 100.0
-            proceeds_expenses -= fx_fee
-            source.fees_paid += fx_fee
+            # Apply FX conversion fees if cross-currency
+            source_conv_fee_pct = get_conversion_fee_pct(source.currency, expenses_currency, config)
+            if source.currency != expenses_currency:
+                fx_fee = proceeds_expenses * source_conv_fee_pct / 100.0
+                proceeds_expenses -= fx_fee
+                source.fees_paid += fx_fee
 
-        total_proceeds_expenses += proceeds_expenses
-        if not unlimited_buy:
-            remaining_need -= proceeds_expenses
+            total_proceeds_expenses += proceeds_expenses
+            if not unlimited_buy:
+                remaining_need -= proceeds_expenses
 
-    if total_proceeds_expenses <= 0:
+    if total_proceeds_expenses <= 0 and total_proceeds_direct <= 0:
         return
 
-    # Apply buyer FX conversion fee if cross-currency
-    buyer_conv_fee_pct = get_conversion_fee_pct(buyer.currency, expenses_currency, config)
-    if buyer.currency != expenses_currency:
-        fx_fee = total_proceeds_expenses * buyer_conv_fee_pct / 100.0
-        total_proceeds_expenses -= fx_fee
-        buyer.fees_paid += fx_fee
+    # Buy into buyer bucket from expenses-currency proceeds (if any)
+    total_bought_buyer = 0.0
+    if total_proceeds_expenses > 0:
+        # Apply buyer FX conversion fee if cross-currency
+        buyer_conv_fee_pct = get_conversion_fee_pct(buyer.currency, expenses_currency, config)
+        if buyer.currency != expenses_currency:
+            fx_fee = total_proceeds_expenses * buyer_conv_fee_pct / 100.0
+            total_proceeds_expenses -= fx_fee
+            buyer.fees_paid += fx_fee
 
-    # Buy into buyer bucket
-    buy_amount_buyer = total_proceeds_expenses / buyer_fx if buyer_fx > 0 else 0
-    invested, buy_fee = compute_buy(buy_amount_buyer, buyer.buy_sell_fee_pct)
+        buy_amount_buyer = total_proceeds_expenses / buyer_fx if buyer_fx > 0 else 0
+        total_bought_buyer += buy_amount_buyer
+
+    # Add direct-transfer proceeds (already in buyer's currency)
+    if total_proceeds_direct > 0:
+        total_bought_buyer += total_proceeds_direct
+
+    if total_bought_buyer <= 0:
+        return
+
+    invested, buy_fee = compute_buy(total_bought_buyer, buyer.buy_sell_fee_pct)
     buyer.amount += invested
     buyer.amount_bought += invested
     buyer.fees_paid += buy_fee * buyer_fx
