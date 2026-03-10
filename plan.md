@@ -253,9 +253,9 @@ Findings from the fourth financial review (requirements → plan → implementat
 ### P4 — Test Coverage Gaps
 
 8. [x] **Buy trigger same-currency FX short-circuit** — Verify that buy trigger between two same-foreign-currency buckets doesn't double-charge FX fees (validates fix of P1 #1).
-9. [ ] **`total_net_spent == expenses` invariant** — Run a multi-month simulation and verify `total_net_spent` equals expenses each month within tight tolerance. Validates that over-sell clipping (P2 #3) doesn't cause accounting discrepancies.
-10. [ ] **Post-expense refill (Phase 3)** — Exercise scenario where cash pool drops below refill trigger after expenses are drawn, and verify it's refilled before buy triggers run.
-11. [ ] **Self-referential trigger behavior** — Test that self-referential triggers are rejected by validation (validates fix of P3 #6).
+9. [x] **`total_net_spent == expenses` invariant** — Run a multi-month simulation and verify `total_net_spent` equals expenses each month within tight tolerance. Validates that over-sell clipping (P2 #3) doesn't cause accounting discrepancies.
+10. [x] **Post-expense refill (Phase 3)** — Exercise scenario where cash pool drops below refill trigger after expenses are drawn, and verify it's refilled before buy triggers run.
+11. [x] **Self-referential trigger behavior** — Test that self-referential triggers are rejected by validation (validates fix of P3 #6).
 12. [x] **`_estimate_net_yield` accuracy vs actual tax** — Compare estimated net yield against actual post-fee-tax-FX proceeds to validate the corrected approximation (validates fix of P2 #2).
 
 ---

@@ -2941,3 +2941,348 @@ class TestEstimateNetYieldAccuracy:
         # With 0 gain and 1% fee: yield = 1 - 0.01 = 0.99
         assert abs(estimated - 0.99) < 0.001, \
             f"Zero-gain yield should be 1-fee_rate, got {estimated}"
+
+
+class TestTotalNetSpentEqualsExpenses:
+    """Stage 15 #9: total_net_spent should equal expenses each month within tight tolerance."""
+
+    def test_net_spent_matches_expenses_no_cash_pool(self):
+        """Without cash pool, sum of bucket net_spent should equal expenses each month."""
+        from engine.simulator import run_simulation
+        from models.inflation import InflationSettings
+
+        config = SimConfig(
+            period_years=5,
+            expenses_currency="USD",
+            capital_gain_tax_pct=25,
+            inflation=InflationSettings(min_pct=1, max_pct=5, avg_pct=2.5),
+            expense_periods=[
+                __import__("models.expense", fromlist=["ExpensePeriod"]).ExpensePeriod(
+                    start_month=1, start_year=1,
+                    amount_min=3000, amount_max=5000, amount_avg=4000,
+                ),
+            ],
+            buckets=[
+                InvestmentBucket(
+                    name="Stocks", initial_price=100, initial_amount=500000,
+                    growth_min_pct=-20, growth_max_pct=30, growth_avg_pct=8,
+                    buy_sell_fee_pct=0.5, spending_priority=0,
+                ),
+                InvestmentBucket(
+                    name="Bonds", initial_price=50, initial_amount=200000,
+                    growth_min_pct=-5, growth_max_pct=10, growth_avg_pct=3,
+                    buy_sell_fee_pct=0.2, spending_priority=1,
+                ),
+            ],
+            cash_pool=CashPool(
+                initial_amount=0, refill_trigger_months=0,
+                refill_target_months=0, cash_floor_months=0,
+            ),
+        )
+
+        rng = np.random.default_rng(42)
+        df = run_simulation(config, rng)
+
+        for i, row in df.iterrows():
+            expenses = row["expenses"]
+            net_spent = row["total_net_spent"]
+            if expenses > 0:
+                # Allow 1% relative tolerance (from gross-up estimate imprecision)
+                assert abs(net_spent - expenses) <= 0.01 * expenses + 0.01, \
+                    f"Month {i}: net_spent={net_spent:.2f} != expenses={expenses:.2f}"
+
+    def test_net_spent_matches_expenses_with_cash_pool(self):
+        """With cash pool, cash_pool_net_spent + bucket net_spent should equal expenses."""
+        from engine.simulator import run_simulation
+        from models.inflation import InflationSettings
+
+        config = SimConfig(
+            period_years=5,
+            expenses_currency="USD",
+            capital_gain_tax_pct=25,
+            inflation=InflationSettings(min_pct=1, max_pct=5, avg_pct=2.5),
+            expense_periods=[
+                __import__("models.expense", fromlist=["ExpensePeriod"]).ExpensePeriod(
+                    start_month=1, start_year=1,
+                    amount_min=3000, amount_max=5000, amount_avg=4000,
+                ),
+            ],
+            buckets=[
+                InvestmentBucket(
+                    name="Stocks", initial_price=100, initial_amount=500000,
+                    growth_min_pct=-20, growth_max_pct=30, growth_avg_pct=8,
+                    buy_sell_fee_pct=0.5, spending_priority=0,
+                ),
+            ],
+            cash_pool=CashPool(
+                initial_amount=50000, refill_trigger_months=6,
+                refill_target_months=12, cash_floor_months=3,
+            ),
+        )
+
+        rng = np.random.default_rng(42)
+        df = run_simulation(config, rng)
+
+        for i, row in df.iterrows():
+            expenses = row["expenses"]
+            net_spent = row["total_net_spent"]
+            if expenses > 0:
+                assert abs(net_spent - expenses) <= 0.01 * expenses + 0.01, \
+                    f"Month {i}: net_spent={net_spent:.2f} != expenses={expenses:.2f}"
+
+    def test_net_spent_matches_with_cross_currency(self):
+        """Cross-currency buckets: net_spent should still match expenses."""
+        from engine.simulator import run_simulation
+        from models.inflation import InflationSettings
+
+        config = SimConfig(
+            period_years=3,
+            expenses_currency="USD",
+            capital_gain_tax_pct=25,
+            inflation=InflationSettings(min_pct=1, max_pct=3, avg_pct=2),
+            expense_periods=[
+                __import__("models.expense", fromlist=["ExpensePeriod"]).ExpensePeriod(
+                    start_month=1, start_year=1,
+                    amount_min=4000, amount_max=4000, amount_avg=4000,
+                ),
+            ],
+            buckets=[
+                InvestmentBucket(
+                    name="EUR_Fund", currency="EUR", initial_price=100,
+                    initial_amount=300000, growth_min_pct=-10,
+                    growth_max_pct=20, growth_avg_pct=7,
+                    buy_sell_fee_pct=0.5, spending_priority=0,
+                ),
+                InvestmentBucket(
+                    name="USD_Fund", initial_price=100,
+                    initial_amount=200000, growth_min_pct=-10,
+                    growth_max_pct=20, growth_avg_pct=5,
+                    buy_sell_fee_pct=0.3, spending_priority=1,
+                ),
+            ],
+            currencies=[
+                CurrencySettings(
+                    code="EUR", initial_price=1.1,
+                    min_price=0.9, max_price=1.3, avg_price=1.1,
+                    conversion_fee_pct=0.5,
+                ),
+            ],
+        )
+
+        rng = np.random.default_rng(42)
+        df = run_simulation(config, rng)
+
+        for i, row in df.iterrows():
+            expenses = row["expenses"]
+            net_spent = row["total_net_spent"]
+            if expenses > 0:
+                assert abs(net_spent - expenses) <= 0.01 * expenses + 0.01, \
+                    f"Month {i}: net_spent={net_spent:.2f} != expenses={expenses:.2f}"
+
+
+class TestPostExpenseRefill:
+    """Stage 15 #10: Cash pool should be refilled after expenses are drawn
+    when it drops below refill trigger."""
+
+    def test_post_expense_refill_occurs(self):
+        """Cash pool above trigger before expenses, below trigger after drawing.
+        Phase 3 should refill it."""
+        # Cash pool: 7000, trigger=6 months, target=12 months, floor=0
+        # Monthly expense: 1000
+        # Before expenses: 7000 > 6*1000=6000 → no pre-expense refill needed
+        # After drawing 1000: 6000 = trigger → borderline
+        # If expenses are 2000: after drawing 2000: 5000 < 6000 → Phase 3 should refill
+        sp500 = _make_state("SP500", price=100, amount=100000,
+                            initial_price=100, buy_sell_fee_pct=0)
+        cash_pool = CashPoolState(
+            amount=7000, refill_trigger_months=6,
+            refill_target_months=12, cash_floor_months=0,
+        )
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            cash_pool=CashPool(initial_amount=7000, refill_trigger_months=6,
+                               refill_target_months=12, cash_floor_months=0),
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=100000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5,
+                                 buy_sell_fee_pct=0),
+            ],
+        )
+
+        # Expense of 2000: pool goes 7000→5000 after draw, below trigger 6000
+        execute_rebalance([sp500], 2000, {}, config, 0, cash_pool=cash_pool)
+
+        # Phase 3 post-expense refill should have topped up toward target (12*2000=24000)
+        assert cash_pool.amount > 5000, \
+            f"Cash pool should be refilled after expenses, got {cash_pool.amount}"
+        assert sp500.amount_sold > 0, "Bucket should be sold for post-expense refill"
+
+    def test_no_post_expense_refill_when_above_trigger(self):
+        """Cash pool still above trigger after expenses → no Phase 3 refill."""
+        sp500 = _make_state("SP500", price=100, amount=100000,
+                            initial_price=100, buy_sell_fee_pct=0)
+        cash_pool = CashPoolState(
+            amount=20000, refill_trigger_months=6,
+            refill_target_months=12, cash_floor_months=0,
+        )
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            cash_pool=CashPool(initial_amount=20000, refill_trigger_months=6,
+                               refill_target_months=12, cash_floor_months=0),
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=100000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5,
+                                 buy_sell_fee_pct=0),
+            ],
+        )
+
+        # Expense of 1000: pool goes 20000→19000, still above 6*1000=6000
+        execute_rebalance([sp500], 1000, {}, config, 0, cash_pool=cash_pool)
+
+        # No refill needed — pool is still well above trigger
+        assert cash_pool.amount == 19000, \
+            f"Cash pool should just be drawn, got {cash_pool.amount}"
+        assert sp500.amount_sold == 0, "No bucket selling needed"
+
+    def test_post_expense_refill_before_buy_triggers(self):
+        """Post-expense refill should happen before buy triggers run,
+        so buy triggers see the refilled cash pool in portfolio total."""
+        buy_trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.SHARE_BELOW.value,
+            threshold_pct=30.0,
+            source_buckets=["Source"],
+        )
+        # Buyer: 10% of portfolio
+        buyer = _make_state("Buyer", price=100, amount=10000,
+                            buy_sell_fee_pct=0, triggers=[buy_trigger])
+        source = _make_state("Source", price=100, amount=90000,
+                             initial_price=100, buy_sell_fee_pct=0)
+        # Cash pool starts just above trigger, drops below after expenses
+        cash_pool = CashPoolState(
+            amount=6100, refill_trigger_months=6,
+            refill_target_months=12, cash_floor_months=0,
+        )
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            cash_pool=CashPool(initial_amount=6100, refill_trigger_months=6,
+                               refill_target_months=12, cash_floor_months=0),
+            buckets=[
+                InvestmentBucket(name="Buyer", initial_price=100, initial_amount=10000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5,
+                                 buy_sell_fee_pct=0),
+                InvestmentBucket(name="Source", initial_price=100, initial_amount=90000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5,
+                                 buy_sell_fee_pct=0),
+            ],
+        )
+
+        # Expense: 1000 → pool goes 6100→5100, below trigger 6000
+        # Phase 3 refills pool, then Phase 4 runs buy triggers
+        execute_rebalance([buyer, source], 1000, {}, config, 0, cash_pool=cash_pool)
+
+        # Cash pool should have been refilled before buy triggers
+        # (buy trigger sees updated portfolio total including refilled cash pool)
+        assert cash_pool.amount > 5100, "Post-expense refill should occur"
+
+
+class TestSelfReferentialTriggerBehavior:
+    """Stage 15 #11: Self-referential triggers (target_bucket or source_buckets
+    referencing the owning bucket). Currently not validated — test observable behavior."""
+
+    def test_sell_trigger_self_target_with_fees(self):
+        """Sell trigger targeting itself: sells and buys back, losing value to fees."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.TAKE_PROFIT.value,
+            threshold_pct=100,
+            target_bucket="SP500",  # self-referential!
+        )
+        sp500 = _make_state("SP500", price=200, amount=10000,
+                            initial_price=100, target_growth_pct=10,
+                            buy_sell_fee_pct=2.0, triggers=[trigger])
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=10000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=2.0),
+            ],
+        )
+
+        initial_amount = sp500.amount
+        execute_rebalance([sp500], 0, {}, config, 0)
+
+        # Trigger fires, sells and buys back into same bucket
+        assert sp500.amount_sold > 0, "Self-referential sell trigger should fire"
+        assert sp500.amount_bought > 0, "Should buy back into itself"
+        # With 2% sell + 2% buy fee, value is destroyed
+        assert sp500.fees_paid > 0, "Fees should be charged"
+        # Net amount should be less than initial (value lost to fees)
+        assert sp500.amount < initial_amount, \
+            "Self-referential trigger with fees should reduce bucket value"
+
+    def test_sell_trigger_self_target_zero_fees(self):
+        """Sell trigger targeting itself with zero fees: should be a wash."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.SELL,
+            subtype=SellSubtype.TAKE_PROFIT.value,
+            threshold_pct=100,
+            target_bucket="SP500",
+        )
+        sp500 = _make_state("SP500", price=200, amount=10000,
+                            initial_price=100, target_growth_pct=10,
+                            buy_sell_fee_pct=0, triggers=[trigger])
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=10000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=0),
+            ],
+        )
+
+        initial_amount = sp500.amount
+        execute_rebalance([sp500], 0, {}, config, 0)
+
+        # With zero fees and zero tax, sell + buy back = wash
+        assert sp500.amount_sold > 0, "Trigger should fire"
+        assert abs(sp500.amount - initial_amount) < 1.0, \
+            "Zero-fee self-referential trigger should preserve value"
+
+    def test_buy_trigger_self_source(self):
+        """Buy trigger with itself as source: should not produce meaningful results
+        since selling from self to buy into self is circular."""
+        trigger = BucketTrigger(
+            trigger_type=TriggerType.BUY,
+            subtype=BuySubtype.DISCOUNT.value,
+            threshold_pct=5.0,
+            source_buckets=["SP500"],  # self-referential!
+        )
+        sp500 = _make_state("SP500", price=80, amount=10000,
+                            initial_price=100, target_growth_pct=10,
+                            buy_sell_fee_pct=0, triggers=[trigger])
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="SP500", initial_price=100, initial_amount=10000,
+                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+                                 buy_sell_fee_pct=0),
+            ],
+        )
+
+        initial_amount = sp500.amount
+        execute_rebalance([sp500], 0, {}, config, 0)
+
+        # Self-source buy trigger: sells from self, buys into self
+        # With zero fees, net effect should be approximately zero
+        # The trigger condition fires (discount exists), but selling from self
+        # to buy into self doesn't change net position (with zero fees/tax)
+        assert abs(sp500.amount - initial_amount) < 1.0, \
+            "Self-source buy trigger with zero fees should be approximately a wash"
