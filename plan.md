@@ -238,25 +238,29 @@ Findings from the fourth financial review (requirements → plan → implementat
 
 2. [x] **`_estimate_net_yield` tax approximation is inaccurate** — `rebalancer.py`: `tax_on_sell = tax_rate * gain_fraction * (1 - fee_rate)`. Correct formula: `tax_rate * max(0, gain_fraction - fee_rate)`. Current formula over-estimates tax by `tax_rate * fee_rate * (1 - gain_fraction)`, causing systematic over-sell in expense coverage and trigger gross-ups. Magnitude: ~0.1–0.35% per sell for typical parameters (25% tax, 0.5–2% fee). Fix: replace `gain_fraction * (1 - fee_rate)` with `max(0, gain_fraction - fee_rate)`.
 
-3. [ ] **Expense coverage over-sell value leakage** — `rebalancer.py`: when gross-up over-shoots and `net_in_expenses > remaining_expense`, the excess net proceeds are lost — not returned to the bucket or added to cash pool. `net_spent` is correctly clipped to `remaining_expense`, but the bucket was sold more than needed and the excess evaporates from the portfolio. Small per occurrence but accumulates over 120+ months. Fix: when cash pool is active, add excess to cash pool. When cash pool is inactive, add excess back to the bucket (buy back the over-sold amount using `_add_purchase_lot`).
+3. [x] **Expense coverage over-sell value leakage** — `rebalancer.py`: when gross-up over-shoots and `net_in_expenses > remaining_expense`, the excess net proceeds are lost — not returned to the bucket or added to cash pool. `net_spent` is correctly clipped to `remaining_expense`, but the bucket was sold more than needed and the excess evaporates from the portfolio. Small per occurrence but accumulates over 120+ months. Fix: when cash pool is active, add excess to cash pool. When cash pool is inactive, add excess back to the bucket (buy back the over-sold amount using `_add_purchase_lot`).
 
-4. [ ] **`_next_lot_cost_per_unit` fallback inconsistency for cross-currency buckets** — `rebalancer.py`: when lots are empty for FIFO/LIFO, falls back to `b.initial_price` (bucket currency) but the function should return expenses-currency values (all other paths return `price_exp`). Fix: change fallback to `b.avg_cost` (which is in expenses currency) instead of `b.initial_price`. Since `avg_cost` is initialized to `initial_price * initial_fx_rate`, this is correct for cross-currency buckets.
+4. [ ] **AVCO lot-walking uses only first lot's units** — `_exact_gross_for_net` (rebalancer.py): AVCO branch sets `lots_iter = [(b.avg_cost, b.purchase_lots[0].units)]`, using only the first lot's units instead of total units across all lots. If a bucket was built from multiple purchases, this underestimates available capacity and causes premature "partial" returns (under-selling). Fix: sum all lot units: `total_units = sum(lot.units for lot in b.purchase_lots)`, then `lots_iter = [(b.avg_cost, total_units)]`.
+
+5. [ ] **Multi-lot test tolerances too loose** — `test_multi_lot_fifo` and `test_multi_lot_lifo` use `< 0.50` tolerance. The exact lot-walking calculation should be precise — tolerance should be `< 0.05`. If imprecision is genuinely > 0.05, that indicates a bug to investigate.
+
+6. [ ] **`_next_lot_cost_per_unit` fallback inconsistency for cross-currency buckets** — `rebalancer.py`: when lots are empty for FIFO/LIFO, falls back to `b.initial_price` (bucket currency) but the function should return expenses-currency values (all other paths return `price_exp`). Fix: change fallback to `b.avg_cost` (which is in expenses currency) instead of `b.initial_price`. Since `avg_cost` is initialized to `initial_price * initial_fx_rate`, this is correct for cross-currency buckets.
 
 ### P3 — Documentation / Ambiguities
 
-5. [ ] **Post-expense cash pool refill is undocumented** — `rebalancer.py` Phase 3: after expenses are drawn, the code runs `_refill_cash_pool` again. Requirements only describe a pre-expense refill (step 5a). The post-expense refill isn't in requirements.md or plan.md order-of-operations. Fix: add step 6 to requirements.md and plan.md documenting the post-expense refill.
+7. [ ] **Post-expense cash pool refill is undocumented** — `rebalancer.py` Phase 3: after expenses are drawn, the code runs `_refill_cash_pool` again. Requirements only describe a pre-expense refill (step 5a). The post-expense refill isn't in requirements.md or plan.md order-of-operations. Fix: add step 6 to requirements.md and plan.md documenting the post-expense refill.
 
-6. [ ] **Self-referential triggers not validated** — A trigger on bucket "SP500" with `target_bucket="SP500"` or `source_buckets` containing its own bucket name is accepted without warning. This creates a sell-then-buy-back cycle that destroys value via fees. Fix: add validation in `SimConfig._check_trigger_bucket_references` to reject self-referential triggers.
+8. [ ] **Self-referential triggers not validated** — A trigger on bucket "SP500" with `target_bucket="SP500"` or `source_buckets` containing its own bucket name is accepted without warning. This creates a sell-then-buy-back cycle that destroys value via fees. Fix: add validation in `SimConfig._check_trigger_bucket_references` to reject self-referential triggers.
 
-7. [ ] **Requirements step numbering skips step 6** — requirements.md monthly order of operations goes 1, 2, 3, 4, 5, 5a, 7, 8 — step 6 is missing. Same in plan.md. Fix: renumber steps to be sequential.
+9. [ ] **Requirements step numbering skips step 6** — requirements.md monthly order of operations goes 1, 2, 3, 4, 5, 5a, 7, 8 — step 6 is missing. Same in plan.md. Fix: renumber steps to be sequential.
 
 ### P4 — Test Coverage Gaps
 
-8. [x] **Buy trigger same-currency FX short-circuit** — Verify that buy trigger between two same-foreign-currency buckets doesn't double-charge FX fees (validates fix of P1 #1).
-9. [x] **`total_net_spent == expenses` invariant** — Run a multi-month simulation and verify `total_net_spent` equals expenses each month within tight tolerance. Validates that over-sell clipping (P2 #3) doesn't cause accounting discrepancies.
-10. [x] **Post-expense refill (Phase 3)** — Exercise scenario where cash pool drops below refill trigger after expenses are drawn, and verify it's refilled before buy triggers run.
-11. [x] **Self-referential trigger behavior** — Test that self-referential triggers are rejected by validation (validates fix of P3 #6).
-12. [x] **`_estimate_net_yield` accuracy vs actual tax** — Compare estimated net yield against actual post-fee-tax-FX proceeds to validate the corrected approximation (validates fix of P2 #2).
+10. [x] **Buy trigger same-currency FX short-circuit** — Verify that buy trigger between two same-foreign-currency buckets doesn't double-charge FX fees (validates fix of P1 #1).
+11. [x] **`total_net_spent == expenses` invariant** — Run a multi-month simulation and verify `total_net_spent` equals expenses each month within tight tolerance. Validates that over-sell clipping (P2 #3) doesn't cause accounting discrepancies.
+12. [x] **Post-expense refill (Phase 3)** — Exercise scenario where cash pool drops below refill trigger after expenses are drawn, and verify it's refilled before buy triggers run.
+13. [x] **Self-referential trigger behavior** — Test that self-referential triggers are rejected by validation (validates fix of P3 #6).
+14. [x] **`_estimate_net_yield` accuracy vs actual tax** — Compare estimated net yield against actual post-fee-tax-FX proceeds to validate the corrected approximation (validates fix of P2 #2).
 
 ---
 
