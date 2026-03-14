@@ -246,7 +246,7 @@ Findings from the fourth financial review (requirements → plan → implementat
 
 6. [x] **`_next_lot_cost_per_unit` fallback is dead code that hides bugs** — `rebalancer.py`: the `b.initial_price` fallback when `avg_cost <= 0` is dead code since Stage 14 fixed `avg_cost` initialization to always be positive. If `avg_cost` were ever 0 at this point, it would indicate an initialization bug — and the fallback to `b.initial_price` (bucket currency) would silently return the wrong currency unit for cross-currency buckets. Fix: replace the `b.initial_price` fallback with a `_write_bug_report` call, since `avg_cost <= 0` is an invariant violation that should be surfaced.
 
-7. [ ] **`_bucket_profitability` config parameter should be non-optional** — `config: SimConfig = None` default means future callers can omit `config`, which would crash inside `_write_bug_report` when it calls `config.model_dump_json()`. All current callers pass it, but the default silently accepts the omission. Fix: make `config` a required parameter (no default).
+7. [x] **`_bucket_profitability` config parameter should be non-optional** — `config: SimConfig = None` default means future callers can omit `config`, which would crash inside `_write_bug_report` when it calls `config.model_dump_json()`. All current callers pass it, but the default silently accepts the omission. Fix: make `config` a required parameter (no default).
 
 ### P3 — Documentation / Ambiguities
 

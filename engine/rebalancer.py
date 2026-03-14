@@ -314,7 +314,7 @@ def _next_lot_cost_per_unit(b: BucketState, config: SimConfig) -> float:
 def _bucket_profitability(
     b: BucketState, fx_rate: float, fee_pct: float,
     conv_fee_pct: float, expenses_currency: str,
-    config: SimConfig = None,
+    config: SimConfig,
 ) -> float:
     """Compute profitability of selling from a bucket: gross gain after FX + fees.
 
