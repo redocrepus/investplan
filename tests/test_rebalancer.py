@@ -6,6 +6,8 @@ from engine.rebalancer import (
     BucketState, CashPoolState, PurchaseLot, execute_rebalance,
     _compute_cost_basis, _add_purchase_lot,
 )
+from engine.errors import SimulationBugError
+from engine.bucket import compute_sell
 from models.config import CashPool
 from models.config import SimConfig
 from models.bucket import (
@@ -195,7 +197,8 @@ class TestBuyDiscountTrigger:
         sp500 = _make_state("SP500", price=80, amount=10000,
                             initial_price=100, target_growth_pct=10,
                             triggers=[trigger])
-        cash = _make_state("Cash", price=1, amount=50000)
+        cash = _make_state("Cash", price=1, amount=50000,
+                           initial_price=1, target_growth_pct=0)
 
         config = SimConfig(
             expenses_currency="USD", capital_gain_tax_pct=0,
@@ -1532,7 +1535,8 @@ class TestDiscountTriggerUsesCostBasis:
                             cost_basis_method=CostBasisMethod.AVCO)
         _add_purchase_lot(buyer, 30000, 200)
 
-        cash = _make_state("Cash", price=1, amount=50000)
+        cash = _make_state("Cash", price=1, amount=50000,
+                           initial_price=1, target_growth_pct=0)
 
         config = SimConfig(
             expenses_currency="USD", capital_gain_tax_pct=0,
@@ -1567,7 +1571,8 @@ class TestDiscountTriggerUsesCostBasis:
                             cost_basis_method=CostBasisMethod.FIFO)
         _add_purchase_lot(buyer, 30000, 200)
 
-        cash = _make_state("Cash", price=1, amount=50000)
+        cash = _make_state("Cash", price=1, amount=50000,
+                           initial_price=1, target_growth_pct=0)
 
         config = SimConfig(
             expenses_currency="USD", capital_gain_tax_pct=0,
@@ -2837,21 +2842,18 @@ class TestBuyTriggerSameCurrencyShortCircuit:
         # (USD→USD is free, but buying EUR requires USD→EUR conversion)
 
 
-class TestEstimateNetYieldAccuracy:
-    """Stage 15 #12: Verify _estimate_net_yield accuracy vs actual tax computation."""
+class TestExactGrossForNet:
+    """Tests for _exact_gross_for_net: exact lot-walking gross-up calculation."""
 
-    def test_estimate_matches_actual(self):
-        """The estimated net yield should closely match actual proceeds/gross ratio."""
-        from engine.rebalancer import _estimate_net_yield
+    def test_single_lot_exact_net(self):
+        """Single lot: gross-up should produce exact net proceeds."""
+        from engine.rebalancer import _exact_gross_for_net
+        from engine.bucket import compute_sell
 
-        # Setup: bucket with 50% gain, 2% fee, 25% tax
         state = _make_state("Test", price=150, amount=15000,
                             initial_price=100, buy_sell_fee_pct=2.0)
-        fx_rate = 1.0
-        tax_rate = 25.0
-
         config = SimConfig(
-            expenses_currency="USD", capital_gain_tax_pct=tax_rate,
+            expenses_currency="USD", capital_gain_tax_pct=25.0,
             buckets=[
                 InvestmentBucket(name="Test", initial_price=100, initial_amount=15000,
                                  growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5,
@@ -2859,45 +2861,104 @@ class TestEstimateNetYieldAccuracy:
             ],
         )
 
-        # Get estimated yield
-        estimated = _estimate_net_yield(state, tax_rate, "USD", config, fx_rate)
-        assert estimated is not None
+        needed_net = 5000.0
+        gross = _exact_gross_for_net(state, needed_net, 25.0, "USD", config, 1.0)
+        assert gross is not None
 
-        # Compute actual yield by doing the exact sell calculation
-        gross_sell = 3000  # sell 3000 currency
-        from engine.bucket import compute_sell
-        from engine.rebalancer import _compute_cost_basis
+        # Verify: actually sell that gross amount and check net ≈ needed_net
+        net_proceeds, fee = compute_sell(gross, state.buy_sell_fee_pct)
+        cost_basis_exp = _compute_cost_basis(state, gross, 1.0)
+        gain_exp = net_proceeds - cost_basis_exp
+        tax_exp = max(0, gain_exp * 25.0 / 100.0)
+        after_tax = net_proceeds - tax_exp
 
-        # Create a copy of state for the actual computation
-        state_copy = _make_state("Test", price=150, amount=15000,
-                                 initial_price=100, buy_sell_fee_pct=2.0)
+        assert abs(after_tax - needed_net) < 0.01, \
+            f"Net proceeds {after_tax:.2f} should equal needed {needed_net:.2f}"
 
-        net_proceeds, fee = compute_sell(gross_sell, state_copy.buy_sell_fee_pct)
-        cost_basis_exp = _compute_cost_basis(state_copy, gross_sell, fx_rate)
-        net_proceeds_exp = net_proceeds * fx_rate
-        gain_exp = net_proceeds_exp - cost_basis_exp
-        tax_exp = max(0, gain_exp * tax_rate / 100.0)
-        tax_bucket = tax_exp / fx_rate
-        after_tax = net_proceeds - tax_bucket
-        after_tax_exp = after_tax * fx_rate
+    def test_multi_lot_fifo(self):
+        """FIFO with multiple lots at different prices: exact gross-up."""
+        from engine.rebalancer import _exact_gross_for_net
 
-        actual_yield = after_tax_exp / (gross_sell * fx_rate)
+        state = BucketState(
+            name="Multi", currency="USD", price=200, amount=20000,
+            initial_price=100, target_growth_pct=10, buy_sell_fee_pct=1.0,
+            spending_priority=0, cash_floor_months=0, required_runaway_months=0,
+            triggers=[], cost_basis_method=CostBasisMethod.FIFO,
+        )
+        # Lot 1: bought at 80 (cheap), 50 units
+        state.purchase_lots.append(PurchaseLot(price_exp=80.0, units=50.0))
+        # Lot 2: bought at 150 (expensive), 50 units
+        state.purchase_lots.append(PurchaseLot(price_exp=150.0, units=50.0))
 
-        # Estimate should be within 1% of actual
-        assert abs(estimated - actual_yield) < 0.01, \
-            f"Estimated yield {estimated:.4f} differs from actual {actual_yield:.4f}"
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=25.0,
+            buckets=[
+                InvestmentBucket(name="Multi", initial_price=100, initial_amount=20000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5,
+                                 buy_sell_fee_pct=1.0),
+            ],
+        )
 
-    def test_estimate_with_cross_currency(self):
-        """Net yield estimate should account for FX conversion fees."""
-        from engine.rebalancer import _estimate_net_yield
+        needed_net = 8000.0
+        gross = _exact_gross_for_net(state, needed_net, 25.0, "USD", config, 1.0)
+        assert gross is not None
+
+        # Verify by actually selling
+        net_proceeds, fee = compute_sell(gross, state.buy_sell_fee_pct)
+        cost_basis_exp = _compute_cost_basis(state, gross, 1.0, config)
+        gain_exp = net_proceeds - cost_basis_exp
+        tax_exp = max(0, gain_exp * 25.0 / 100.0)
+        after_tax = net_proceeds - tax_exp
+
+        assert abs(after_tax - needed_net) < 0.50, \
+            f"Multi-lot FIFO net {after_tax:.2f} should ≈ needed {needed_net:.2f}"
+
+    def test_multi_lot_lifo(self):
+        """LIFO with multiple lots at different prices: exact gross-up."""
+        from engine.rebalancer import _exact_gross_for_net
+
+        state = BucketState(
+            name="Multi", currency="USD", price=200, amount=20000,
+            initial_price=100, target_growth_pct=10, buy_sell_fee_pct=1.0,
+            spending_priority=0, cash_floor_months=0, required_runaway_months=0,
+            triggers=[], cost_basis_method=CostBasisMethod.LIFO,
+        )
+        # Lot 1: bought at 80 (cheap), 50 units
+        state.purchase_lots.append(PurchaseLot(price_exp=80.0, units=50.0))
+        # Lot 2: bought at 180 (expensive), 50 units — LIFO sells this first
+        state.purchase_lots.append(PurchaseLot(price_exp=180.0, units=50.0))
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=25.0,
+            buckets=[
+                InvestmentBucket(name="Multi", initial_price=100, initial_amount=20000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5,
+                                 buy_sell_fee_pct=1.0),
+            ],
+        )
+
+        needed_net = 8000.0
+        gross = _exact_gross_for_net(state, needed_net, 25.0, "USD", config, 1.0)
+        assert gross is not None
+
+        # Verify by actually selling
+        net_proceeds, fee = compute_sell(gross, state.buy_sell_fee_pct)
+        cost_basis_exp = _compute_cost_basis(state, gross, 1.0, config)
+        gain_exp = net_proceeds - cost_basis_exp
+        tax_exp = max(0, gain_exp * 25.0 / 100.0)
+        after_tax = net_proceeds - tax_exp
+
+        assert abs(after_tax - needed_net) < 0.50, \
+            f"Multi-lot LIFO net {after_tax:.2f} should ≈ needed {needed_net:.2f}"
+
+    def test_cross_currency_with_fx_fee(self):
+        """Cross-currency gross-up should account for FX conversion fee."""
+        from engine.rebalancer import _exact_gross_for_net
 
         state = _make_state("EUR_Fund", currency="EUR", price=150, amount=15000,
                             initial_price=100, buy_sell_fee_pct=1.0)
-        fx_rate = 1.1
-        tax_rate = 25.0
-
         config = SimConfig(
-            expenses_currency="USD", capital_gain_tax_pct=tax_rate,
+            expenses_currency="USD", capital_gain_tax_pct=25.0,
             buckets=[
                 InvestmentBucket(name="EUR_Fund", currency="EUR", initial_price=100,
                                  initial_amount=15000, growth_min_pct=0,
@@ -2913,22 +2974,52 @@ class TestEstimateNetYieldAccuracy:
             ],
         )
 
-        estimated = _estimate_net_yield(state, tax_rate, "USD", config, fx_rate)
-        assert estimated is not None
-        # With 1% sell fee + ~tax + 2% FX fee, net yield should be well below 1.0
-        assert estimated < 0.95, "Net yield should account for fees, tax, and FX"
-        assert estimated > 0.5, "Net yield should still be positive"
+        needed_net = 5000.0
+        gross = _exact_gross_for_net(state, needed_net, 25.0, "USD", config, 1.1)
+        assert gross is not None
+        # Gross should be larger than needed_net / fx_rate due to fees/tax/FX
+        assert gross > needed_net / 1.1
 
-    def test_estimate_zero_gain_no_tax(self):
-        """When bucket has no gain, estimated yield should have no tax component."""
-        from engine.rebalancer import _estimate_net_yield
+    def test_skip_fx_conv_same_currency(self):
+        """skip_fx_conv=True should produce smaller gross (no FX fee deduction)."""
+        from engine.rebalancer import _exact_gross_for_net
 
-        # Price unchanged → no gain → no tax
+        state = _make_state("EUR_Fund", currency="EUR", price=150, amount=15000,
+                            initial_price=100, buy_sell_fee_pct=1.0)
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=25.0,
+            buckets=[
+                InvestmentBucket(name="EUR_Fund", currency="EUR", initial_price=100,
+                                 initial_amount=15000, growth_min_pct=0,
+                                 growth_max_pct=10, growth_avg_pct=5,
+                                 buy_sell_fee_pct=1.0),
+            ],
+            currencies=[
+                CurrencySettings(
+                    code="EUR", initial_price=1.1,
+                    min_price=0.9, max_price=1.3, avg_price=1.1,
+                    conversion_fee_pct=2.0,
+                ),
+            ],
+        )
+
+        needed_net = 5000.0
+        gross_with_fx = _exact_gross_for_net(state, needed_net, 25.0, "USD", config, 1.1)
+        gross_no_fx = _exact_gross_for_net(state, needed_net, 25.0, "USD", config, 1.1,
+                                            skip_fx_conv=True)
+        assert gross_with_fx is not None
+        assert gross_no_fx is not None
+        assert gross_no_fx < gross_with_fx, \
+            "Skipping FX conv should need less gross to cover same net"
+
+    def test_zero_gain_no_tax(self):
+        """When bucket has no gain, gross-up should only account for fees."""
+        from engine.rebalancer import _exact_gross_for_net
+
         state = _make_state("Flat", price=100, amount=10000,
                             initial_price=100, buy_sell_fee_pct=1.0)
-
         config = SimConfig(
-            expenses_currency="USD", capital_gain_tax_pct=25,
+            expenses_currency="USD", capital_gain_tax_pct=25.0,
             buckets=[
                 InvestmentBucket(name="Flat", initial_price=100, initial_amount=10000,
                                  growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0,
@@ -2936,11 +3027,58 @@ class TestEstimateNetYieldAccuracy:
             ],
         )
 
-        estimated = _estimate_net_yield(state, 25.0, "USD", config, 1.0)
-        assert estimated is not None
-        # With 0 gain and 1% fee: yield = 1 - 0.01 = 0.99
-        assert abs(estimated - 0.99) < 0.001, \
-            f"Zero-gain yield should be 1-fee_rate, got {estimated}"
+        needed_net = 1000.0
+        gross = _exact_gross_for_net(state, needed_net, 25.0, "USD", config, 1.0)
+        assert gross is not None
+        # With 0 gain, no tax. Fee = 1%, so gross ≈ 1000 / 0.99 ≈ 1010.10
+        expected_gross = needed_net / 0.99
+        assert abs(gross - expected_gross) < 0.10, \
+            f"Zero-gain gross {gross:.2f} should ≈ {expected_gross:.2f}"
+
+    def test_returns_none_when_not_viable(self):
+        """When net yield per unit <= 0, should return None."""
+        from engine.rebalancer import _exact_gross_for_net
+
+        # 100% fee makes selling unviable
+        state = _make_state("Extreme", price=100, amount=10000,
+                            initial_price=100, buy_sell_fee_pct=100.0)
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="Extreme", initial_price=100, initial_amount=10000,
+                                 growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0,
+                                 buy_sell_fee_pct=100.0),
+            ],
+        )
+
+        result = _exact_gross_for_net(state, 1000.0, 0, "USD", config, 1.0)
+        assert result is None
+
+    def test_partial_when_lots_exhausted(self):
+        """When lots can't fully cover needed_net, return partial gross."""
+        from engine.rebalancer import _exact_gross_for_net
+
+        state = BucketState(
+            name="Small", currency="USD", price=100, amount=500,
+            initial_price=100, target_growth_pct=10, buy_sell_fee_pct=0,
+            spending_priority=0, cash_floor_months=0, required_runaway_months=0,
+            triggers=[], cost_basis_method=CostBasisMethod.FIFO,
+        )
+        state.purchase_lots.append(PurchaseLot(price_exp=100.0, units=5.0))
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="Small", initial_price=100, initial_amount=500,
+                                 growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0),
+            ],
+        )
+
+        # Need more net than available — should return the max gross possible
+        gross = _exact_gross_for_net(state, 10000.0, 0, "USD", config, 1.0)
+        assert gross is not None
+        # Max is 5 units * 100 price = 500 bucket currency
+        assert abs(gross - 500.0) < 0.01
 
 
 class TestTotalNetSpentEqualsExpenses:
@@ -3264,14 +3402,16 @@ class TestSelfReferentialTriggerBehavior:
             threshold_pct=5.0,
             source_buckets=["SP500"],  # self-referential!
         )
+        # Use initial_price=80 to match price=80 so lots are consistent.
+        # The discount trigger still fires because target_price = 80*1.1 = 88 > 80.
         sp500 = _make_state("SP500", price=80, amount=10000,
-                            initial_price=100, target_growth_pct=10,
+                            initial_price=80, target_growth_pct=10,
                             buy_sell_fee_pct=0, triggers=[trigger])
 
         config = SimConfig(
             expenses_currency="USD", capital_gain_tax_pct=0,
             buckets=[
-                InvestmentBucket(name="SP500", initial_price=100, initial_amount=10000,
+                InvestmentBucket(name="SP500", initial_price=80, initial_amount=10000,
                                  growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
                                  buy_sell_fee_pct=0),
             ],
@@ -3286,3 +3426,78 @@ class TestSelfReferentialTriggerBehavior:
         # to buy into self doesn't change net position (with zero fees/tax)
         assert abs(sp500.amount - initial_amount) < 1.0, \
             "Self-source buy trigger with zero fees should be approximately a wash"
+
+
+class TestComputeCostBasisBugReport:
+    """Test that _compute_cost_basis raises SimulationBugError on lots exhausted."""
+
+    def test_lots_exhausted_raises_bug_error(self, tmp_path, monkeypatch):
+        """When lots are exhausted with remaining units, should raise SimulationBugError."""
+        monkeypatch.chdir(tmp_path)
+
+        state = BucketState(
+            name="Broken", currency="USD", price=100, amount=10000,
+            initial_price=100, target_growth_pct=10, buy_sell_fee_pct=0,
+            spending_priority=0, cash_floor_months=0, required_runaway_months=0,
+            triggers=[], cost_basis_method=CostBasisMethod.FIFO,
+        )
+        # Add only 10 units but try to sell 200 units worth (20000 currency)
+        state.purchase_lots.append(PurchaseLot(price_exp=100.0, units=10.0))
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="Broken", initial_price=100, initial_amount=10000,
+                                 growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0),
+            ],
+        )
+
+        with pytest.raises(SimulationBugError, match="lots exhausted"):
+            _compute_cost_basis(state, 20000.0, 1.0, config)
+
+    def test_lots_exhausted_writes_json_report(self, tmp_path, monkeypatch):
+        """Bug report JSON file should be written before raising."""
+        monkeypatch.chdir(tmp_path)
+
+        state = BucketState(
+            name="Broken", currency="USD", price=100, amount=10000,
+            initial_price=100, target_growth_pct=10, buy_sell_fee_pct=0,
+            spending_priority=0, cash_floor_months=0, required_runaway_months=0,
+            triggers=[], cost_basis_method=CostBasisMethod.FIFO,
+        )
+        state.purchase_lots.append(PurchaseLot(price_exp=100.0, units=10.0))
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=0,
+            buckets=[
+                InvestmentBucket(name="Broken", initial_price=100, initial_amount=10000,
+                                 growth_min_pct=0, growth_max_pct=0, growth_avg_pct=0),
+            ],
+        )
+
+        with pytest.raises(SimulationBugError):
+            _compute_cost_basis(state, 20000.0, 1.0, config)
+
+        import glob
+        reports = glob.glob(str(tmp_path / "bug_report_*.json"))
+        assert len(reports) == 1, "Should have written exactly one bug report"
+
+        import json
+        with open(reports[0]) as f:
+            report = json.load(f)
+        assert "lots exhausted" in report["error"]
+        assert report["context"]["bucket"] == "Broken"
+
+    def test_no_config_falls_back_silently(self):
+        """Without config parameter, should fall back silently (backward compat)."""
+        state = BucketState(
+            name="Legacy", currency="USD", price=100, amount=10000,
+            initial_price=100, target_growth_pct=10, buy_sell_fee_pct=0,
+            spending_priority=0, cash_floor_months=0, required_runaway_months=0,
+            triggers=[], cost_basis_method=CostBasisMethod.FIFO,
+        )
+        state.purchase_lots.append(PurchaseLot(price_exp=100.0, units=10.0))
+
+        # Without config, should NOT raise — falls back to old behavior
+        result = _compute_cost_basis(state, 20000.0, 1.0)
+        assert result > 0
