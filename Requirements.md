@@ -77,14 +77,14 @@ At the beginning of each month:
 2. Apply FX rate changes
 3. Calculate this month's expenses (inflation-adjusted from the defined expense periods)
 4. Run sell triggers (period_months check): Take Profit, Share exceeds X% — subject to runaway guard
-5. Cover expenses: if cash pool is insufficient, refill it first (see step 5a), then draw from cash pool. If still insufficient after refill, fall through to direct bucket selling.
-   5a. Refill cash pool: if below refill trigger, sell from most profitable bucket first (respecting cash floors and implicit share% floors) until cash pool reaches refill target or sources exhausted.
-7. Run buy triggers (period_months check): Discount >= X%, Share falls below X% — funds from source buckets
-8. Record all outputs
+5. Cover expenses: if cash pool is insufficient, refill it first (see step 5.1), then draw from cash pool. If still insufficient after refill, fall through to direct bucket selling.
+   1. Refill cash pool: if below refill trigger, sell from most profitable bucket first (respecting cash floors and implicit share% floors) until cash pool reaches refill target or sources exhausted.
+6. Run buy triggers (period_months check): Discount >= X%, Share falls below X% — funds from source buckets
+7. Record all outputs
 
 ## Expense coverage rules
 When covering expenses (step 5 above):
-1. If the cash pool balance is below the month's expenses, refill it to refill target first (step 5a). Then draw from the cash pool. If still insufficient after refill, draw whatever is available and fall through to direct bucket selling for the remainder.
+1. If the cash pool balance is below the month's expenses, refill it to refill target first (step 5.1). Then draw from the cash pool. If still insufficient after refill, draw whatever is available and fall through to direct bucket selling for the remainder.
 2. Sell from buckets in order of highest profitability, respecting the cash floor guards and implicit share% floors. The profitability of selling a bucket is calculated as the gross gain of the next lots to sell (per the bucket's cost basis method: FIFO front, LIFO back, AVCO average) after converting to expenses currency applying the current FX rate if needed and the fees.
 3. If there are no profitable buckets to sell, sell from buckets in order of spending priority, respecting the cash floor guards, even if it means selling at a loss.
 4. If all buckets hit the cash floor, sell in the reverse order of spending priority, even if it means selling at a loss AND violating the cash floor. This preserves the most stable assets (highest priority) as long as possible during financial distress.
