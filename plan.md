@@ -244,15 +244,13 @@ Findings from the fourth financial review (requirements → plan → implementat
 
 5. [ ] **Multi-lot test tolerances too loose** — `test_multi_lot_fifo` and `test_multi_lot_lifo` use `< 0.50` tolerance. The exact lot-walking calculation should be precise — tolerance should be `< 0.05`. If imprecision is genuinely > 0.05, that indicates a bug to investigate.
 
-6. [ ] **`_next_lot_cost_per_unit` fallback inconsistency for cross-currency buckets** — `rebalancer.py`: when lots are empty for FIFO/LIFO, falls back to `b.initial_price` (bucket currency) but the function should return expenses-currency values (all other paths return `price_exp`). Fix: change fallback to `b.avg_cost` (which is in expenses currency) instead of `b.initial_price`. Since `avg_cost` is initialized to `initial_price * initial_fx_rate`, this is correct for cross-currency buckets.
+6. [ ] **`_next_lot_cost_per_unit` fallback is dead code that hides bugs** — `rebalancer.py`: the `b.initial_price` fallback when `avg_cost <= 0` is dead code since Stage 14 fixed `avg_cost` initialization to always be positive. If `avg_cost` were ever 0 at this point, it would indicate an initialization bug — and the fallback to `b.initial_price` (bucket currency) would silently return the wrong currency unit for cross-currency buckets. Fix: replace the `b.initial_price` fallback with a `_write_bug_report` call, since `avg_cost <= 0` is an invariant violation that should be surfaced.
 
 ### P3 — Documentation / Ambiguities
 
 7. [ ] **Post-expense cash pool refill is undocumented** — `rebalancer.py` Phase 3: after expenses are drawn, the code runs `_refill_cash_pool` again. Requirements only describe a pre-expense refill (step 5.1). The post-expense refill isn't in requirements.md or plan.md order-of-operations. Fix: add a post-expense refill step to requirements.md and plan.md documenting this behavior.
 
 8. [ ] **Self-referential triggers not validated** — A trigger on bucket "SP500" with `target_bucket="SP500"` or `source_buckets` containing its own bucket name is accepted without warning. This creates a sell-then-buy-back cycle that destroys value via fees. Fix: add validation in `SimConfig._check_trigger_bucket_references` to reject self-referential triggers.
-
-9. [x] **Requirements step numbering skips step 6** — requirements.md monthly order of operations goes 1, 2, 3, 4, 5, 5a, 7, 8 — step 6 is missing. Same in plan.md. Fix: renumber steps to be sequential.
 
 ### P4 — Test Coverage Gaps
 
