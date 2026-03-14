@@ -52,7 +52,7 @@ class TriggerDialog(QDialog):
 
         # --- Sell trigger: single target bucket ---
         self._target_bucket = QComboBox()
-        self._target_bucket.setEditable(True)
+        self._target_bucket.setEditable(False)
         self._target_bucket.addItem("")
         self._target_bucket.setToolTip(
             "Target bucket to buy with sell proceeds."
@@ -74,7 +74,7 @@ class TriggerDialog(QDialog):
         source_btn_row = QHBoxLayout()
         self._source_add_combo = QComboBox()
         self._source_add_combo.addItems(self._bucket_names)
-        self._source_add_combo.setEditable(True)
+        self._source_add_combo.setEditable(False)
         source_btn_row.addWidget(self._source_add_combo)
         self._btn_source_add = QPushButton("Add")
         self._btn_source_remove = QPushButton("Remove")

@@ -3380,105 +3380,70 @@ class TestPostExpenseRefill:
         assert cash_pool.amount > 5100, "Post-expense refill should occur"
 
 
-class TestSelfReferentialTriggerBehavior:
-    """Stage 15 #11: Self-referential triggers (target_bucket or source_buckets
-    referencing the owning bucket). Currently not validated — test observable behavior."""
+class TestSelfReferentialTriggerValidation:
+    """Stage 15 #14: Self-referential triggers (target_bucket or source_buckets
+    referencing the owning bucket) are rejected by validation."""
 
-    def test_sell_trigger_self_target_with_fees(self):
-        """Sell trigger targeting itself: sells and buys back, losing value to fees."""
-        trigger = BucketTrigger(
-            trigger_type=TriggerType.SELL,
-            subtype=SellSubtype.TAKE_PROFIT.value,
-            threshold_pct=100,
-            target_bucket="SP500",  # self-referential!
-        )
-        sp500 = _make_state("SP500", price=200, amount=10000,
-                            initial_price=100, target_growth_pct=10,
-                            buy_sell_fee_pct=2.0, triggers=[trigger])
+    def test_sell_trigger_self_target_rejected(self):
+        """Sell trigger targeting itself should be rejected at config creation."""
+        with pytest.raises(ValueError, match="references itself as target_bucket"):
+            SimConfig(
+                expenses_currency="USD", capital_gain_tax_pct=0,
+                buckets=[
+                    InvestmentBucket(
+                        name="SP500", initial_price=100, initial_amount=10000,
+                        growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+                        triggers=[BucketTrigger(
+                            trigger_type=TriggerType.SELL,
+                            subtype=SellSubtype.TAKE_PROFIT.value,
+                            threshold_pct=100,
+                            target_bucket="SP500",
+                        )],
+                    ),
+                ],
+            )
 
+    def test_buy_trigger_self_source_rejected(self):
+        """Buy trigger with itself as source should be rejected at config creation."""
+        with pytest.raises(ValueError, match="references itself in source_buckets"):
+            SimConfig(
+                expenses_currency="USD", capital_gain_tax_pct=0,
+                buckets=[
+                    InvestmentBucket(
+                        name="SP500", initial_price=80, initial_amount=10000,
+                        growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+                        triggers=[BucketTrigger(
+                            trigger_type=TriggerType.BUY,
+                            subtype=BuySubtype.DISCOUNT.value,
+                            threshold_pct=5.0,
+                            source_buckets=["SP500"],
+                        )],
+                    ),
+                ],
+            )
+
+    def test_cross_bucket_triggers_still_valid(self):
+        """Triggers referencing other buckets should still work fine."""
         config = SimConfig(
             expenses_currency="USD", capital_gain_tax_pct=0,
             buckets=[
-                InvestmentBucket(name="SP500", initial_price=100, initial_amount=10000,
-                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
-                                 buy_sell_fee_pct=2.0),
+                InvestmentBucket(
+                    name="SP500", initial_price=100, initial_amount=10000,
+                    growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
+                    triggers=[BucketTrigger(
+                        trigger_type=TriggerType.SELL,
+                        subtype=SellSubtype.TAKE_PROFIT.value,
+                        threshold_pct=100,
+                        target_bucket="Bonds",
+                    )],
+                ),
+                InvestmentBucket(
+                    name="Bonds", initial_price=50, initial_amount=5000,
+                    growth_min_pct=0, growth_max_pct=5, growth_avg_pct=2,
+                ),
             ],
         )
-
-        initial_amount = sp500.amount
-        execute_rebalance([sp500], 0, {}, config, 0)
-
-        # Trigger fires, sells and buys back into same bucket
-        assert sp500.amount_sold > 0, "Self-referential sell trigger should fire"
-        assert sp500.amount_bought > 0, "Should buy back into itself"
-        # With 2% sell + 2% buy fee, value is destroyed
-        assert sp500.fees_paid > 0, "Fees should be charged"
-        # Net amount should be less than initial (value lost to fees)
-        assert sp500.amount < initial_amount, \
-            "Self-referential trigger with fees should reduce bucket value"
-
-    def test_sell_trigger_self_target_zero_fees(self):
-        """Sell trigger targeting itself with zero fees: should be a wash."""
-        trigger = BucketTrigger(
-            trigger_type=TriggerType.SELL,
-            subtype=SellSubtype.TAKE_PROFIT.value,
-            threshold_pct=100,
-            target_bucket="SP500",
-        )
-        sp500 = _make_state("SP500", price=200, amount=10000,
-                            initial_price=100, target_growth_pct=10,
-                            buy_sell_fee_pct=0, triggers=[trigger])
-
-        config = SimConfig(
-            expenses_currency="USD", capital_gain_tax_pct=0,
-            buckets=[
-                InvestmentBucket(name="SP500", initial_price=100, initial_amount=10000,
-                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
-                                 buy_sell_fee_pct=0),
-            ],
-        )
-
-        initial_amount = sp500.amount
-        execute_rebalance([sp500], 0, {}, config, 0)
-
-        # With zero fees and zero tax, sell + buy back = wash
-        assert sp500.amount_sold > 0, "Trigger should fire"
-        assert abs(sp500.amount - initial_amount) < 1.0, \
-            "Zero-fee self-referential trigger should preserve value"
-
-    def test_buy_trigger_self_source(self):
-        """Buy trigger with itself as source: should not produce meaningful results
-        since selling from self to buy into self is circular."""
-        trigger = BucketTrigger(
-            trigger_type=TriggerType.BUY,
-            subtype=BuySubtype.DISCOUNT.value,
-            threshold_pct=5.0,
-            source_buckets=["SP500"],  # self-referential!
-        )
-        # Use initial_price=80 to match price=80 so lots are consistent.
-        # The discount trigger still fires because target_price = 80*1.1 = 88 > 80.
-        sp500 = _make_state("SP500", price=80, amount=10000,
-                            initial_price=80, target_growth_pct=10,
-                            buy_sell_fee_pct=0, triggers=[trigger])
-
-        config = SimConfig(
-            expenses_currency="USD", capital_gain_tax_pct=0,
-            buckets=[
-                InvestmentBucket(name="SP500", initial_price=80, initial_amount=10000,
-                                 growth_min_pct=-10, growth_max_pct=30, growth_avg_pct=10,
-                                 buy_sell_fee_pct=0),
-            ],
-        )
-
-        initial_amount = sp500.amount
-        execute_rebalance([sp500], 0, {}, config, 0)
-
-        # Self-source buy trigger: sells from self, buys into self
-        # With zero fees, net effect should be approximately zero
-        # The trigger condition fires (discount exists), but selling from self
-        # to buy into self doesn't change net position (with zero fees/tax)
-        assert abs(sp500.amount - initial_amount) < 1.0, \
-            "Self-source buy trigger with zero fees should be approximately a wash"
+        assert len(config.buckets) == 2
 
 
 class TestComputeCostBasisBugReport:

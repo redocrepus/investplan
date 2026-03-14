@@ -72,7 +72,8 @@ class SimConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_trigger_bucket_references(self):
-        """Validate that all trigger target_bucket/source_buckets references resolve."""
+        """Validate that all trigger target_bucket/source_buckets references resolve
+        and are not self-referential."""
         bucket_names = {b.name for b in self.buckets}
         for bucket in self.buckets:
             for trigger in bucket.triggers:
@@ -81,10 +82,20 @@ class SimConfig(BaseModel):
                         f"Bucket '{bucket.name}' trigger references unknown "
                         f"target_bucket '{trigger.target_bucket}'"
                     )
+                if trigger.target_bucket and trigger.target_bucket == bucket.name:
+                    raise ValueError(
+                        f"Bucket '{bucket.name}' trigger references itself as "
+                        f"target_bucket (self-referential triggers destroy value via fees)"
+                    )
                 for src in trigger.source_buckets:
                     if src not in bucket_names:
                         raise ValueError(
                             f"Bucket '{bucket.name}' trigger references unknown "
                             f"source_bucket '{src}'"
+                        )
+                    if src == bucket.name:
+                        raise ValueError(
+                            f"Bucket '{bucket.name}' trigger references itself in "
+                            f"source_buckets (self-referential triggers destroy value via fees)"
                         )
         return self

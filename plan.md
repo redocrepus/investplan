@@ -253,7 +253,7 @@ Findings from the fourth financial review (requirements → plan → implementat
 
 8. [x] **Post-expense cash pool refill is undocumented** — `rebalancer.py` Phase 3: after expenses are drawn, the code runs `_refill_cash_pool` again. Requirements only describe a pre-expense refill (step 5.1). The post-expense refill isn't in requirements.md or plan.md order-of-operations. Fix: add a post-expense refill step to requirements.md and plan.md documenting this behavior.
 
-9. [ ] **Self-referential triggers not validated** — A trigger on bucket "SP500" with `target_bucket="SP500"` or `source_buckets` containing its own bucket name is accepted without warning. This creates a sell-then-buy-back cycle that destroys value via fees. Fix: add validation in `SimConfig._check_trigger_bucket_references` to reject self-referential triggers.
+9. [x] **Self-referential triggers not validated** — A trigger on bucket "SP500" with `target_bucket="SP500"` or `source_buckets` containing its own bucket name is accepted without warning. This creates a sell-then-buy-back cycle that destroys value via fees. Fix: add validation in `SimConfig._check_trigger_bucket_references` to reject self-referential triggers.
 
 ### P4 — Test Coverage Gaps
 
