@@ -267,6 +267,8 @@ Findings from the fourth financial review (requirements → plan → implementat
 ## Future Plans
 
 ### Near Future
+- [ ] Add income (goes to the cash pool)
+- [ ] Add investment triggers to cash pool (e.g., if cash pool exceeds X months, invest excess in specific bucket, in bucket with the lowest share%, the lowest "discount" bucket or in the most profitable bucket etc. - configurable)
 - [ ] Add inflation-to-asset-return correlation parameters per bucket (configurable coefficient, default 0)
 - [ ] Add inter-bucket return correlation for Monte Carlo (correlation matrix or preset scenarios: crisis/normal/boom)
 - [ ] Sell proceeds formula selection — implement Israeli tax law formula (requires web research on Israeli capital gains tax computation rules)
