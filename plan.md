@@ -147,8 +147,9 @@ Growth and FX rates are modeled as log-normal random walks. Inflation uses a mea
 2. Apply FX changes
 3. Calculate this month's expenses (inflation-adjusted)
 4. Run sell triggers (period_months check, snapshot-based condition evaluation): Take Profit, Share exceeds X% — subject to runaway guard, target ceiling pre-limiting
-5. Cover expenses: draw from cash pool (respecting cash floor), refill if needed (step 5.1). If still insufficient, sell from buckets (most profitable first, then by spending priority; reverse-priority fallback when all at floor).
-   1. Refill cash pool: if below refill trigger, sell from most profitable bucket first (respecting cash floors and share% floors) until reaching refill target or sources exhausted.
+5. Cover expenses: draw from cash pool (respecting cash floor), refill if needed (step 5.1). If still insufficient, sell from buckets (most profitable first, then by spending priority; reverse-priority fallback when all at floor). After expenses, refill again if needed (step 5.2).
+   1. Pre-expense refill: if below refill trigger, sell from most profitable bucket first (respecting cash floors and share% floors) until reaching refill target or sources exhausted.
+   2. Post-expense refill: if cash pool dropped below refill trigger after drawing expenses, refill again (same logic as 5.1).
 6. Run buy triggers (period_months check, snapshot-based condition evaluation): Discount >= X%, Share falls below X% — funds from source bucket
 7. Record all outputs to the DataFrame row
 
@@ -250,7 +251,7 @@ Findings from the fourth financial review (requirements → plan → implementat
 
 ### P3 — Documentation / Ambiguities
 
-8. [ ] **Post-expense cash pool refill is undocumented** — `rebalancer.py` Phase 3: after expenses are drawn, the code runs `_refill_cash_pool` again. Requirements only describe a pre-expense refill (step 5.1). The post-expense refill isn't in requirements.md or plan.md order-of-operations. Fix: add a post-expense refill step to requirements.md and plan.md documenting this behavior.
+8. [x] **Post-expense cash pool refill is undocumented** — `rebalancer.py` Phase 3: after expenses are drawn, the code runs `_refill_cash_pool` again. Requirements only describe a pre-expense refill (step 5.1). The post-expense refill isn't in requirements.md or plan.md order-of-operations. Fix: add a post-expense refill step to requirements.md and plan.md documenting this behavior.
 
 9. [ ] **Self-referential triggers not validated** — A trigger on bucket "SP500" with `target_bucket="SP500"` or `source_buckets` containing its own bucket name is accepted without warning. This creates a sell-then-buy-back cycle that destroys value via fees. Fix: add validation in `SimConfig._check_trigger_bucket_references` to reject self-referential triggers.
 
