@@ -279,16 +279,32 @@ def _available_to_sell(
     return max(0.0, bucket_value - effective_floor)
 
 
-def _next_lot_cost_per_unit(b: BucketState) -> float:
+def _next_lot_cost_per_unit(b: BucketState, config: SimConfig) -> float:
     """Return cost per unit (in expenses currency) for the next lots to sell.
 
     FIFO: front lot price_exp, LIFO: back lot price_exp, AVCO: avg_cost.
-    Falls back to initial_price if no lots exist (assumes FX=1 at init).
+    Raises SimulationBugError if avg_cost <= 0 on a bucket with positive amount
+    (invariant violation since avg_cost is initialized to initial_price * fx_rate).
+    Empty buckets (amount <= 0) legitimately have avg_cost == 0.
     """
     if b.cost_basis_method == CostBasisMethod.AVCO:
-        return b.avg_cost if b.avg_cost > 0 else b.initial_price
+        if b.avg_cost <= 0 and b.amount > 0:
+            _write_bug_report(
+                f"Bucket '{b.name}' has non-positive avg_cost {b.avg_cost} (AVCO)",
+                {"bucket": b.name, "avg_cost": b.avg_cost, "price": b.price,
+                 "amount": b.amount, "cost_basis_method": b.cost_basis_method.value},
+                config,
+            )
+        return b.avg_cost
     if not b.purchase_lots:
-        return b.avg_cost if b.avg_cost > 0 else b.initial_price
+        if b.avg_cost <= 0 and b.amount > 0:
+            _write_bug_report(
+                f"Bucket '{b.name}' has no purchase lots and non-positive avg_cost {b.avg_cost}",
+                {"bucket": b.name, "avg_cost": b.avg_cost, "price": b.price,
+                 "amount": b.amount, "cost_basis_method": b.cost_basis_method.value},
+                config,
+            )
+        return b.avg_cost
     if b.cost_basis_method == CostBasisMethod.FIFO:
         return b.purchase_lots[0].price_exp
     # LIFO
@@ -298,6 +314,7 @@ def _next_lot_cost_per_unit(b: BucketState) -> float:
 def _bucket_profitability(
     b: BucketState, fx_rate: float, fee_pct: float,
     conv_fee_pct: float, expenses_currency: str,
+    config: SimConfig = None,
 ) -> float:
     """Compute profitability of selling from a bucket: gross gain after FX + fees.
 
@@ -311,7 +328,7 @@ def _bucket_profitability(
     conv_cost = 0.0
     if b.currency != expenses_currency:
         conv_cost = value_exp * conv_fee_pct / 100.0
-    cost_per_unit_exp = _next_lot_cost_per_unit(b)  # in expenses currency
+    cost_per_unit_exp = _next_lot_cost_per_unit(b, config)  # in expenses currency
     current_price_exp = b.price * fx_rate  # current price in expenses currency
     if cost_per_unit_exp > 0:
         gain_ratio = (current_price_exp - cost_per_unit_exp) / cost_per_unit_exp
@@ -365,7 +382,8 @@ def _exact_gross_for_net(
     if b.cost_basis_method == CostBasisMethod.AVCO:
         # Single synthetic lot
         if b.purchase_lots:
-            lots_iter = [(b.avg_cost, b.purchase_lots[0].units)]
+            total_units = sum(lot.units for lot in b.purchase_lots)
+            lots_iter = [(b.avg_cost, total_units)]
         else:
             return None
     elif b.cost_basis_method == CostBasisMethod.FIFO:
@@ -456,7 +474,7 @@ def _execute_sell_trigger(
         # Use cost basis per unit based on bucket's cost basis method (per requirements).
         # Both values in expenses currency for correct cross-currency comparison.
         seller_fx = get_fx_rate(seller.currency, expenses_currency, fx_rates)
-        cost_per_unit_exp = _next_lot_cost_per_unit(seller)  # expenses currency
+        cost_per_unit_exp = _next_lot_cost_per_unit(seller, config)  # expenses currency
         current_price_exp = seller.price * seller_fx  # expenses currency
         if seller.target_growth_pct == 0 or cost_per_unit_exp <= 0:
             return
@@ -638,7 +656,7 @@ def _execute_buy_trigger(
         # Buy if 100 * target_price / current_price - 100 > threshold%
         # Both in expenses currency for correct cross-currency comparison.
         buyer_fx = get_fx_rate(buyer.currency, expenses_currency, fx_rates)
-        cost_per_unit_exp = _next_lot_cost_per_unit(buyer)  # expenses currency
+        cost_per_unit_exp = _next_lot_cost_per_unit(buyer, config)  # expenses currency
         target_price_exp = cost_per_unit_exp * (1 + buyer.target_growth_pct / 100.0)
         current_price_exp = buyer.price * buyer_fx
         if current_price_exp <= 0:
@@ -707,7 +725,7 @@ def _execute_buy_trigger(
     for s in sources:
         s_fx = get_fx_rate(s.currency, expenses_currency, fx_rates)
         conv_fee_pct = get_conversion_fee_pct(s.currency, expenses_currency, config)
-        profit = _bucket_profitability(s, s_fx, s.buy_sell_fee_pct, conv_fee_pct, expenses_currency)
+        profit = _bucket_profitability(s, s_fx, s.buy_sell_fee_pct, conv_fee_pct, expenses_currency, config)
         avail = _available_to_sell(s, month_expense, s_fx, bucket_states, fx_rates, expenses_currency, cash_pool_amount)
         source_info.append((s, profit, s_fx, avail))
 
@@ -853,7 +871,7 @@ def _refill_cash_pool(
     for b in bucket_states:
         fx = get_fx_rate(b.currency, expenses_currency, fx_rates)
         conv_fee_pct = get_conversion_fee_pct(b.currency, expenses_currency, config)
-        profit = _bucket_profitability(b, fx, b.buy_sell_fee_pct, conv_fee_pct, expenses_currency)
+        profit = _bucket_profitability(b, fx, b.buy_sell_fee_pct, conv_fee_pct, expenses_currency, config)
         bucket_profit.append((b, profit, fx))
 
     # Separate profitable and unprofitable
@@ -939,7 +957,7 @@ def _cover_expenses_from_buckets(
     for b in bucket_states:
         fx = get_fx_rate(b.currency, expenses_currency, fx_rates)
         conv_fee_pct = get_conversion_fee_pct(b.currency, expenses_currency, config)
-        profit = _bucket_profitability(b, fx, b.buy_sell_fee_pct, conv_fee_pct, expenses_currency)
+        profit = _bucket_profitability(b, fx, b.buy_sell_fee_pct, conv_fee_pct, expenses_currency, config)
         bucket_profit.append((b, profit))
 
     profitable = [(b, p) for b, p in bucket_profit if p > 0]

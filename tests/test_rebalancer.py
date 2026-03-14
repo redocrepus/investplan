@@ -2910,7 +2910,7 @@ class TestExactGrossForNet:
         tax_exp = max(0, gain_exp * 25.0 / 100.0)
         after_tax = net_proceeds - tax_exp
 
-        assert abs(after_tax - needed_net) < 0.50, \
+        assert abs(after_tax - needed_net) < 0.05, \
             f"Multi-lot FIFO net {after_tax:.2f} should ≈ needed {needed_net:.2f}"
 
     def test_multi_lot_lifo(self):
@@ -2948,8 +2948,61 @@ class TestExactGrossForNet:
         tax_exp = max(0, gain_exp * 25.0 / 100.0)
         after_tax = net_proceeds - tax_exp
 
-        assert abs(after_tax - needed_net) < 0.50, \
+        assert abs(after_tax - needed_net) < 0.05, \
             f"Multi-lot LIFO net {after_tax:.2f} should ≈ needed {needed_net:.2f}"
+
+    def test_avco_multi_lot_uses_total_units(self):
+        """AVCO with multiple purchase lots should use total units, not just first lot."""
+        from engine.rebalancer import _exact_gross_for_net
+        from engine.bucket import compute_sell
+
+        state = BucketState(
+            name="AVCO_Multi", currency="USD", price=120, amount=12000,
+            initial_price=100, target_growth_pct=10, buy_sell_fee_pct=1.0,
+            spending_priority=0, cash_floor_months=0, required_runaway_months=0,
+            triggers=[], cost_basis_method=CostBasisMethod.AVCO,
+        )
+        # Simulate multiple buys: 3 lots, 20 units each = 60 total units
+        # avg_cost should reflect weighted average
+        state.purchase_lots.append(PurchaseLot(price_exp=90.0, units=20.0))
+        state.purchase_lots.append(PurchaseLot(price_exp=100.0, units=20.0))
+        state.purchase_lots.append(PurchaseLot(price_exp=110.0, units=20.0))
+        state.avg_cost = 100.0  # weighted avg of 90, 100, 110
+
+        config = SimConfig(
+            expenses_currency="USD", capital_gain_tax_pct=25.0,
+            buckets=[
+                InvestmentBucket(name="AVCO_Multi", initial_price=100, initial_amount=12000,
+                                 growth_min_pct=0, growth_max_pct=10, growth_avg_pct=5,
+                                 buy_sell_fee_pct=1.0),
+            ],
+        )
+
+        # Request net that requires more than 20 units (first lot) to cover
+        # With price=120, avg_cost=100, fee=1%, tax=25%:
+        # net_after_fee = 120 * 0.99 = 118.8
+        # gain = 118.8 - 100 = 18.8
+        # tax = 18.8 * 0.25 = 4.7
+        # net_per_unit = 118.8 - 4.7 = 114.1
+        # 30 units would yield ~3423 net — request that amount
+        needed_net = 3400.0
+        gross = _exact_gross_for_net(state, needed_net, 25.0, "USD", config, 1.0)
+        assert gross is not None
+
+        # Verify the gross covers the needed net
+        units_sold = gross / state.price
+        # Must need more than 20 units (first lot) to confirm we use total
+        assert units_sold > 20.0, \
+            f"Should sell >20 units (got {units_sold:.2f}), proving total units are used"
+
+        # Verify precision using _compute_cost_basis (consistent with FIFO/LIFO tests)
+        net_proceeds, fee = compute_sell(gross, state.buy_sell_fee_pct)
+        cost_basis_exp = _compute_cost_basis(state, gross, 1.0, config)
+        gain_exp = net_proceeds - cost_basis_exp
+        tax_exp = max(0, gain_exp * 25.0 / 100.0)
+        after_tax = net_proceeds - tax_exp
+        assert abs(after_tax - needed_net) < 0.05, \
+            f"AVCO multi-lot net {after_tax:.2f} should ≈ needed {needed_net:.2f}"
 
     def test_cross_currency_with_fx_fee(self):
         """Cross-currency gross-up should account for FX conversion fee."""
